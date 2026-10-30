@@ -23,7 +23,6 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     public class DuelConfig
     {
         public int FirstToLimit { get; set; }
-        public bool FirstToSeven { get; set; }
         public NetworkCommunicator NetworkPeer { get; set; }
         public MissionTime? LastTeleportWarningTimer { get; set; }
         public List<ItemObject>? RespawnEquip { get; set; } // RespawnEquip
@@ -34,7 +33,6 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             NetworkPeer = networkPeer;
             FirstToLimit = 1;
-            FirstToSeven = false;
             LastTeleportWarningTimer = null;
             RespawnEquip = null;
             DeathFrame = null;
@@ -140,6 +138,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         public Team? DuelingTeam { get; private set; }
         public bool Started { get; private set; }
         public bool ChallengeEnded { get; set; }
+        public int FirstToLimit { get; private set; } = 1;
 
         private const float DuelStartCountdown = 3f;
         private readonly Challenger[] _challengers;
@@ -213,10 +212,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 _ = new PlayerDuelData(_challengers[1].NetworkPeer!.VirtualPlayer.Id, _challengers[1].MissionPeer, requesteeItemList);
 
                 DuelConfig duelConfig1 = PlayersDuelConfig.GetValueOrDefault(_challengers[0].NetworkPeer!.VirtualPlayer.Id)!;
-                DuelConfig duelConfig2 = PlayersDuelConfig.GetValueOrDefault(_challengers[1].NetworkPeer!.VirtualPlayer.Id)!;
+                FirstToLimit = duelConfig1.FirstToLimit;
 
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"You are fighting against {_challengers[1].NetworkPeer!.UserName} in a first to {duelConfig2.FirstToLimit}.");
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"You are fighting against {_challengers[0].NetworkPeer!.UserName} in a first to {duelConfig1.FirstToLimit}.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"You are fighting against {_challengers[1].NetworkPeer!.UserName} in a first to {FirstToLimit}.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"You are fighting against {_challengers[0].NetworkPeer!.UserName} in a first to {FirstToLimit}.");
             }
 
             Started = false;
@@ -257,10 +256,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
             if (ChallengeEnded)
             {
-                int p1Limit = PlayersDuelConfig.GetValueOrDefault(_challengers[0].MissionPeer.Peer.Id)?.FirstToLimit ?? 1;
-                int p2Limit = PlayersDuelConfig.GetValueOrDefault(_challengers[1].MissionPeer.Peer.Id)?.FirstToLimit ?? 1;
-                int currentLimit = Math.Min(p1Limit, p2Limit);
-                if (currentLimit >= 7)
+                if (FirstToLimit > 1)
                 {
                     MissionPeer winnerPeer = _winnerChallengerType == ChallengerType.Requester ? _challengers[0].MissionPeer : _challengers[1].MissionPeer;
                     MissionPeer loserPeer = _winnerChallengerType == ChallengerType.Requestee ? _challengers[0].MissionPeer : _challengers[1].MissionPeer;
@@ -268,9 +264,9 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                     int loserScore = _winnerChallengerType == ChallengerType.Requestee ? _challengers[0].KillCountInDuel : _challengers[1].KillCountInDuel;
                     int winnerDamage = _winnerChallengerType == ChallengerType.Requester ? RequesterDamageDealt : RequesteeDamageDealt;
                     int loserDamage = _winnerChallengerType == ChallengerType.Requestee ? RequesterDamageDealt : RequesteeDamageDealt;
-                    if (winnerScore == currentLimit || loserScore == currentLimit)
+                    if (winnerScore == FirstToLimit || loserScore == FirstToLimit)
                     {
-                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} beat {loserPeer.Name} in a Ft{currentLimit}! | {winnerScore} - {loserScore} ({winnerDamage} - {loserDamage})", false);
+                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} beat {loserPeer.Name} in a Ft{FirstToLimit}! | {winnerScore} - {loserScore} ({winnerDamage} - {loserDamage})", false);
                     }
                 }
             }
@@ -398,11 +394,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 GameNetwork.WriteMessage(new DuelRoundEnded(_challengers[(int)_winnerChallengerType].NetworkPeer));
                 GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.None);
 
-                int p1Limit = PlayersDuelConfig.GetValueOrDefault(_challengers[0].MissionPeer.Peer.Id)?.FirstToLimit ?? 1;
-                int p2Limit = PlayersDuelConfig.GetValueOrDefault(_challengers[1].MissionPeer.Peer.Id)?.FirstToLimit ?? 1;
-                int currentLimit = Math.Min(p1Limit, p2Limit);
-
-                if (_challengers[(int)_winnerChallengerType].KillCountInDuel >= currentLimit || !isConnectionActive || !isConnectionActive2) // In Warband there is always just one duel.
+                if (_challengers[(int)_winnerChallengerType].KillCountInDuel >= FirstToLimit || !isConnectionActive || !isConnectionActive2) // In Warband there is always just one duel.
                 {
                     ChallengeEnded = true;
                 }
@@ -582,6 +574,11 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     public void DuelRequestReceived(MissionPeer requesterPeer, MissionPeer requesteePeer)
     {
+        if (!HaveMatchingDuelLimits(requesterPeer, requesteePeer))
+        {
+            return;
+        }
+
         if (!IsThereARequestBetweenPeers(requesterPeer, requesteePeer) && !IsHavingDuel(requesterPeer) && !IsHavingDuel(requesteePeer))
         {
             DuelInfo duelInfo = new(requesterPeer, requesteePeer, new KeyValuePair<int, TroopType>(0, TroopType.Infantry));
@@ -595,8 +592,48 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         DuelInfo? duelInfo = _duelRequests.FirstOrDefault((DuelInfo di) => di.IsPeerInThisDuel(requesterAgent.MissionPeer) && di.IsPeerInThisDuel(requesteeAgent.MissionPeer));
         if (duelInfo != null)
         {
+            // Either player may have changed mode while this request was pending.
+            if (!HaveMatchingDuelLimits(requesterAgent.MissionPeer, requesteeAgent.MissionPeer))
+            {
+                _duelRequests.Remove(duelInfo);
+                return;
+            }
+
             PrepareDuel(duelInfo);
         }
+    }
+
+    private bool HaveMatchingDuelLimits(MissionPeer requesterPeer, MissionPeer requesteePeer)
+    {
+        NetworkCommunicator? requesterNetworkPeer = requesterPeer.GetNetworkPeer();
+        NetworkCommunicator? requesteeNetworkPeer = requesteePeer.GetNetworkPeer();
+        if (!PlayersDuelConfig.TryGetValue(requesterPeer.Peer.Id, out DuelConfig? requesterConfig)
+            || !PlayersDuelConfig.TryGetValue(requesteePeer.Peer.Id, out DuelConfig? requesteeConfig))
+        {
+            if (requesterNetworkPeer != null)
+            {
+                AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, "Duel mode is not ready. Please try again.");
+            }
+
+            return false;
+        }
+
+        if (AdimiToolsDuelModes.CanDuel(requesterConfig.FirstToLimit, requesteeConfig.FirstToLimit))
+        {
+            return true;
+        }
+
+        if (requesterNetworkPeer != null)
+        {
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} is in first to {requesteeConfig.FirstToLimit}; you are in first to {requesterConfig.FirstToLimit}. Both players must select the same limit. Use !ft {requesteeConfig.FirstToLimit} or hit the matching anvil.");
+        }
+
+        if (requesteeNetworkPeer != null)
+        {
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} is in first to {requesterConfig.FirstToLimit}; you are in first to {requesteeConfig.FirstToLimit}. Both players must select the same limit. Use !ft {requesterConfig.FirstToLimit} or hit the matching anvil.");
+        }
+
+        return false;
     }
 
     public override void OnMissionTick(float dt)
@@ -981,16 +1018,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         if (missionPeer != null)
         {
             Agent agentFromIndex = Mission.MissionNetworkHelper.GetAgentFromIndex(duelRequest.RequestedAgentIndex);
-            if (agentFromIndex != null && agentFromIndex.IsActive())
+            if (agentFromIndex != null && agentFromIndex.IsActive() && agentFromIndex.MissionPeer != null)
             {
-                DuelConfig? duelConfig1 = PlayersDuelConfig.GetValueOrDefault(missionPeer.Peer.Id);
-                DuelConfig? duelConfig2 = PlayersDuelConfig.GetValueOrDefault(agentFromIndex.MissionPeer.Peer.Id);
-                if (duelConfig1 == null || duelConfig2 == null || duelConfig1.FirstToSeven != duelConfig2.FirstToSeven)
-                {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(peer!, $"{agentFromIndex.MissionPeer.Name} is{(duelConfig1!.FirstToSeven! ? " NOT" : string.Empty)} in a first to 7 mode. Hit the anvil or type !ft {(!duelConfig1!.FirstToSeven! ? "7" : "1")} to {(!duelConfig1!.FirstToSeven! ? " disable your ft7 mode" : "switch to ft1 mode.")}.");
-                    return true;
-                }
-
                 DuelRequestReceived(missionPeer, agentFromIndex.MissionPeer);
             }
         }
@@ -1299,13 +1328,21 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             }
         }
 
-        IEnumerable<GameEntity> anvilGameEntities = Mission.Scene.FindEntitiesWithTag("adimi_ft7_anvil");
-        foreach (GameEntity anvilEntity in anvilGameEntities)
+        foreach (int limit in AdimiToolsDuelModes.AnvilLimits)
         {
-            if (anvilEntity.GetFirstScriptOfType<AdimiToolsDuelFt7Anvil>() == null)
+            foreach (GameEntity anvilEntity in Mission.Scene.FindEntitiesWithTag(AdimiToolsDuelModes.GetAnvilTag(limit)))
             {
-                anvilEntity.CreateAndAddScriptComponent("AdimiToolsDuelFt7Anvil");
-                AdimiToolsConsoleLog.Log("Added ft7 anvil");
+                if (AdimiToolsDuelModes.GetAnvilLimit(anvilEntity.Tags) == 0)
+                {
+                    AdimiToolsConsoleLog.Log($"Skipped anvil {anvilEntity.Name}: select exactly one FT3, FT5 or FT7 tag.");
+                    continue;
+                }
+
+                if (anvilEntity.GetFirstScriptOfType<AdimiToolsDuelFt7Anvil>() == null)
+                {
+                    anvilEntity.CreateAndAddScriptComponent("AdimiToolsDuelFt7Anvil");
+                    AdimiToolsConsoleLog.Log($"Added ft{limit} anvil");
+                }
             }
         }
     }

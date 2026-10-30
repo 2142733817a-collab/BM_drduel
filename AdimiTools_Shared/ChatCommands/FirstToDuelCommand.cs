@@ -31,15 +31,20 @@ internal class FirstToDuelCommand : ChatCommand
     {
         int input = (int)arguments[0];
 
-        if (input <= 0 || input > 10)
+        if (!AdimiDuel_Server.Duel.AdimiToolsDuelModes.IsValidLimit(input))
         {
             AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "Use !ft 1-10");
             AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "Example: !ft 7 sets you into a first to 7 mode.");
             return;
         }
 
-        MissionPeer missionPeer = fromPeer.GetComponent<MissionPeer>();
-        if (missionPeer.Team.IsDefender)
+        MissionPeer? missionPeer = fromPeer.GetComponent<MissionPeer>();
+        if (missionPeer == null)
+        {
+            return;
+        }
+
+        if (missionPeer.Team?.IsDefender == true)
         {
             AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You cannot change the duel mode mid duel.");
             return;
@@ -47,18 +52,8 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig))
         {
-            if (input == 7)
-            {
-                duelConfig.FirstToSeven = true;
-                duelConfig.FirstToLimit = 7;
-                AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You are now in a first to {duelConfig.FirstToLimit} mode. You can hit the anvil to stop the first to 7 mode or use the !ft 1-10 command.");
-            }
-            else
-            {
-                duelConfig.FirstToSeven = false;
-                duelConfig.FirstToLimit = input;
-                AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You are now in a first to {duelConfig.FirstToLimit} mode.");
-            }
+            duelConfig.FirstToLimit = input;
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You are now in a first to {duelConfig.FirstToLimit} mode. Your opponent must select the same limit.");
         }
         else
         {
