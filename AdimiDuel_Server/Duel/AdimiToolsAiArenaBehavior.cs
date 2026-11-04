@@ -246,6 +246,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     continue;
                 }
 
+                // A living owner leaving the arena forfeits the whole series,
+                // before bot deaths can award a round. Ignore the old corpse
+                // while waiting for the losing player to respawn.
+                if (arena.Area != null && ownerAgent.IsActive() && ownerAgent.Health > 0f
+                    && ReferenceEquals(owner.ControlledAgent, ownerAgent) && !arena.Area.IsPointIn(ownerAgent.Position))
+                {
+                    if (arena.Session.State == AdimiToolsAiArenaState.Running && arena.Series != null)
+                    {
+                        arena.RoundPending = true;
+                        arena.Series.ForfeitPlayer();
+                        ResetArena(arena, "你已离开训练区域，整场挑战判负，AI 获胜。区域恢复开放。");
+                    }
+                    else
+                    {
+                        ResetArena(arena, "挑战开始前离开训练区域，本次 AI 挑战已取消。");
+                    }
+
+                    continue;
+                }
+
                 // Area protection remains active while waiting for a series respawn.
                 if (arena.Area != null && !EvictOtherPlayers(arena, owner))
                 {
@@ -294,8 +314,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     }
                 }
 
-                if (!ownerAgent.IsActive() || ownerAgent.Health <= 0f || !ReferenceEquals(owner.ControlledAgent, ownerAgent)
-                    || (arena.Area != null && !arena.Area.IsPointIn(ownerAgent.Position)))
+                if (!ownerAgent.IsActive() || ownerAgent.Health <= 0f || !ReferenceEquals(owner.ControlledAgent, ownerAgent))
                 {
                     ResetArena(arena, "AI 挑战已结束，区域恢复开放。");
                     continue;

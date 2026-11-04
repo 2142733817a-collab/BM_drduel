@@ -127,6 +127,15 @@ internal sealed class AdimiToolsAiArenaSeries
         return IsComplete;
     }
 
+    public void ForfeitPlayer()
+    {
+        if (!IsComplete)
+        {
+            IsComplete = true;
+            WinnerPlayer = false;
+        }
+    }
+
     public void Reset(int aiCount, int selectedLimit)
     {
         FirstToLimit = ResolveLimit(aiCount, selectedLimit);
