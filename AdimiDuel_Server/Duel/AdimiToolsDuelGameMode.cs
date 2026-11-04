@@ -27,7 +27,7 @@ internal class AdimiToolsDuelGameMode : MissionBasedMultiplayerGameMode
                 var spawnComponent = new SpawnComponent(new AdimiToolsDuelSpawnFrame(), new AdimiToolsDuelSpawningBehavior());
                 return new MissionBehavior[]
                 {
-                    MissionLobbyComponent.CreateBehavior(),
+                    AdimiToolsDuelLobbyComponent.CreateBehavior(),
                     new AdimiToolsMissionMultiplayerDuel(spawnComponent),
                     new AdimiToolsAiArenaBehavior(),
                     new MissionMultiplayerGameModeDuelClient(),

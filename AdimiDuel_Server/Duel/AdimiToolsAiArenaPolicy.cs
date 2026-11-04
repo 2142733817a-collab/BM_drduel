@@ -29,16 +29,53 @@ internal static class AdimiToolsAiArenaTags
 {
     public const string GroupPrefix = "adimi_ai_group_";
     public const string TriggerRoleTag = "adimi_ai_trigger";
+    public const string EnhancedTriggerRoleTag = "adimi_ai_trigger_enhanced";
+    public const string SimpleTriggerRoleTag = "adimi_ai_trigger_1";
+    public const string NormalTriggerRoleTag = "adimi_ai_trigger_2";
+    public const string HardTriggerRoleTag = "adimi_ai_trigger_3";
     public const string SpawnRoleTag = "adimi_ai_spawn";
     public const string BarrierRoleTag = "adimi_ai_barrier";
+    public const string LadderRoleTag = "adimi_ai_ladder";
     public const string AreaRoleTag = "adimi_ai_area";
 
-    public static bool IsValidRoleCounts(int triggerCount, int spawnCount, int barrierCount, int areaCount)
+    public static bool IsValidRoleCounts(int triggerCount, int spawnCount, int barrierCount, int areaCount, int enhancedTriggerCount = 0, int hardTriggerCount = 0, int ladderCount = 0)
     {
-        return triggerCount == 1
+        return triggerCount is 0 or 1
+            && enhancedTriggerCount is 0 or 1
+            && hardTriggerCount is 0 or 1
+            && triggerCount + enhancedTriggerCount + hardTriggerCount > 0
             && spawnCount == 1
-            && barrierCount is 0 or 1
+            && barrierCount >= 0
+            && ladderCount >= 0
             && areaCount is 0 or 1;
+    }
+
+    public static bool IsTriggerTag(string tag)
+    {
+        return tag == TriggerRoleTag || tag.StartsWith(TriggerRoleTag + "_", StringComparison.Ordinal);
+    }
+
+    public static bool TryGetTriggerDifficulty(IEnumerable<string> tags, out int difficulty)
+    {
+        difficulty = 0;
+        string[] selectors = tags.Where(tag => tag == SimpleTriggerRoleTag || tag == NormalTriggerRoleTag || tag == HardTriggerRoleTag)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        if (selectors.Length > 1 || tags.Any(tag => IsTriggerTag(tag) && tag != TriggerRoleTag
+            && tag != EnhancedTriggerRoleTag && tag != SimpleTriggerRoleTag && tag != NormalTriggerRoleTag && tag != HardTriggerRoleTag))
+        {
+            return false;
+        }
+
+        if (selectors.Length == 1)
+        {
+            // A numbered selector overrides the old enhanced alias, so copying
+            // an existing statue only requires replacing its numbered tag.
+            difficulty = selectors[0] == SimpleTriggerRoleTag ? 1 : selectors[0] == NormalTriggerRoleTag ? 2 : 3;
+            return true;
+        }
+
+        difficulty = tags.Contains(EnhancedTriggerRoleTag) ? 2 : tags.Contains(TriggerRoleTag) ? 1 : 0;
+        return difficulty != 0;
     }
 
     public static bool TryParseGroupTag(string? tag, out int groupId)
@@ -76,6 +113,28 @@ internal static class AdimiToolsAiArenaTags
 
         return GroupPrefix + groupId.ToString(CultureInfo.InvariantCulture);
     }
+}
+
+internal static class AdimiToolsAiArenaDifficulty
+{
+    public const int Simple = 1;
+    public const int Normal = 2;
+    public const int Hard = 3;
+    public const int EnhancedSkillBonus = 50;
+    public const int HardSkillValue = 330;
+    public const float EnhancedHealthMultiplier = 2f;
+
+    public static string GetName(int difficulty)
+    {
+        return difficulty switch { Simple => "简单", Normal => "一般", Hard => "困难", _ => "未知" };
+    }
+}
+
+internal static class AdimiToolsDuelInterference
+{
+    public const float WarningDistance = 3f;
+    public const float EvictionDistance = 1f;
+    public const float WarningIntervalSeconds = 5f;
 }
 
 internal sealed class AdimiToolsAiArenaSeries
@@ -143,6 +202,37 @@ internal sealed class AdimiToolsAiArenaSeries
         AiWins = 0;
         IsComplete = false;
         WinnerPlayer = null;
+    }
+}
+
+internal sealed class AdimiToolsAiArenaNavigationGuard
+{
+    public const double GraceSeconds = 5d;
+
+    private double _outsideSince = double.NaN;
+    private double _lastCheckedAt = double.NaN;
+
+    public bool Check(bool enabled, bool isOnNavigationMesh, double now)
+    {
+        if (!enabled || isOnNavigationMesh || !double.IsFinite(now) || now < 0d)
+        {
+            Reset();
+            return false;
+        }
+
+        if (double.IsNaN(_outsideSince) || now < _lastCheckedAt)
+        {
+            _outsideSince = now;
+        }
+
+        _lastCheckedAt = now;
+        return now - _outsideSince >= GraceSeconds;
+    }
+
+    public void Reset()
+    {
+        _outsideSince = double.NaN;
+        _lastCheckedAt = double.NaN;
     }
 }
 

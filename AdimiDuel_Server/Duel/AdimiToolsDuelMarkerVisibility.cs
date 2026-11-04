@@ -1,6 +1,6 @@
 namespace AdimiDuel_Server.Duel;
 
-/// <summary>Distance policy independent of engine, network and client UI objects.</summary>
+/// <summary>Distance and AI reservation policy independent of engine, network and client UI objects.</summary>
 internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
     where TPeer : notnull
 {
@@ -13,6 +13,7 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
     public DuelMarkerBatch<TPeer> Plan(TPeer observer, IEnumerable<DuelMarkerTarget<TPeer>> targets, bool canUpdate)
     {
         var hide = new List<TPeer>();
+        var forcedHide = new List<TPeer>();
         var restore = new List<TPeer>();
         if (!canUpdate)
         {
@@ -26,14 +27,27 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
             if (EqualityComparer<TPeer>.Default.Equals(target.Peer, observer)
                 || !seen.Add(target.Peer)
                 || !target.IsActive
-                || target.IsInDuel
-                || !float.IsFinite(target.DistanceSquared)
-                || target.DistanceSquared < 0f)
+                || target.IsInDuel)
             {
                 continue;
             }
 
             bool wasHidden = hidden?.Contains(target.Peer) ?? false;
+            if (target.MustHide)
+            {
+                if (!wasHidden)
+                {
+                    forcedHide.Add(target.Peer);
+                }
+
+                continue;
+            }
+
+            if (!float.IsFinite(target.DistanceSquared) || target.DistanceSquared < 0f)
+            {
+                continue;
+            }
+
             if (wasHidden && target.DistanceSquared <= RestoreDistance * RestoreDistance)
             {
                 restore.Add(target.Peer);
@@ -44,9 +58,10 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
             }
         }
 
-        // Prefer bringing newly nearby players back before hiding additional ones.
-        restore = restore.Take(MaximumChangesPerBatch).ToList();
-        hide = hide.Take(MaximumChangesPerBatch - restore.Count).ToList();
+        // AI participation takes priority over ordinary distance changes.
+        forcedHide = forcedHide.Take(MaximumChangesPerBatch).ToList();
+        restore = restore.Take(MaximumChangesPerBatch - forcedHide.Count).ToList();
+        hide = forcedHide.Concat(hide.Take(MaximumChangesPerBatch - forcedHide.Count - restore.Count)).ToList();
         return new(observer, hide, restore);
     }
 
@@ -78,6 +93,15 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
         }
     }
 
+    // A directed AI display DuelEnded restores this target in one client only.
+    public void OnTargetRestored(TPeer observer, TPeer target)
+    {
+        if (_hidden.TryGetValue(observer, out HashSet<TPeer>? hidden))
+        {
+            hidden.Remove(target);
+        }
+    }
+
     public void ResetObserver(TPeer observer)
     {
         _hidden.Remove(observer);
@@ -105,7 +129,7 @@ internal enum DuelMarkerOperationKind
     EndSelf,
 }
 
-internal readonly record struct DuelMarkerTarget<TPeer>(TPeer Peer, float DistanceSquared, bool IsActive, bool IsInDuel)
+internal readonly record struct DuelMarkerTarget<TPeer>(TPeer Peer, float DistanceSquared, bool IsActive, bool IsInDuel, bool MustHide = false)
     where TPeer : notnull;
 
 internal readonly record struct DuelMarkerOperation<TPeer>(DuelMarkerOperationKind Kind, TPeer Peer)

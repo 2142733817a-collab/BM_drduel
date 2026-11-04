@@ -26,7 +26,7 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
 
             if (missionPeer.Team?.IsDefender == true)
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"You cannot change the duel mode mid duel.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "对局进行中，无法切换胜场设置。");
                 return false;
             }
 
@@ -41,16 +41,16 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
                 duelConfig.FirstToLimit = AdimiToolsDuelModes.ToggleLimit(duelConfig.FirstToLimit, anvilLimit);
                 if (duelConfig.FirstToLimit == 1)
                 {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "You are now in a first to 1 mode.");
+                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "已切换为 FT1：一局定胜负。");
                 }
                 else
                 {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"You are now in a first to {duelConfig.FirstToLimit} mode. Hit this anvil again to return to first to 1, or use !ft 1-10.");
+                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"已切换为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。再次敲击此物品可返回 FT1，也可输入 !ft 1-10 设置。");
                 }
             }
             else
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"An error occured.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "无法读取对局设置，请稍后重试。");
             }
         }
 

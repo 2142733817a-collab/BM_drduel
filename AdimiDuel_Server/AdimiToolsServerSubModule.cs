@@ -43,6 +43,14 @@ public class AdimiToolsServerSubModule : MBSubModuleBase
         AppDomain.CurrentDomain.ProcessExit += (sender, eventArgs) => OnExitServer(null);
     }
 
+    protected override void OnGameStart(Game game, IGameStarter gameStarter)
+    {
+        base.OnGameStart(game, gameStarter);
+        gameStarter.AddModel(new AdimiToolsAiArenaAgentStatModel());
+        gameStarter.AddModel(new AdimiToolsAiArenaStrikeMagnitudeModel());
+        gameStarter.AddModel(new AdimiToolsAiArenaApplyDamageModel());
+    }
+
     private async void OnExitServer(Exception? ex)
     {
         if (ex != null)

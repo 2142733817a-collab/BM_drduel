@@ -76,20 +76,21 @@ internal class AdimiToolsDuelSpawnFrame : SpawnFrameBehaviorBase
         return GetSpawnFrameFromSpawnPoints(matchingSpawnPoints, team, hasMount);
     }
 
-    public MatrixFrame GetRandomSectionSpawn(string section)
+    public MatrixFrame GetRandomSectionSpawn(string section, bool hasMount = false)
     {
-        if (section == "B")
+        IEnumerable<GameEntity> sectionSpawnPoints = section switch
         {
-            return GetSpawnFrameFromSpawnPoints(_sectionBSpawnPoints!.ToList(), null, false);
-        }
-        else if (section == "C")
+            "B" => _sectionBSpawnPoints!,
+            "C" => _sectionCSpawnPoints!,
+            _ => _sectionASpawnPoints!,
+        };
+        List<GameEntity> compatiblePoints = sectionSpawnPoints.Where(spawnPoint => IsCompatibleSpawn(spawnPoint, hasMount)).ToList();
+        if (compatiblePoints.Count == 0)
         {
-            return GetSpawnFrameFromSpawnPoints(_sectionCSpawnPoints!.ToList(), null, false);
+            compatiblePoints = SpawnPoints.Where(spawnPoint => IsCompatibleSpawn(spawnPoint, hasMount)).ToList();
         }
-        else
-        {
-            return GetSpawnFrameFromSpawnPoints(_sectionASpawnPoints!.ToList(), null, false);
-        }
+
+        return GetSpawnFrameFromSpawnPoints(compatiblePoints, null, hasMount);
     }
 
     public MatrixFrame GetRandomSpawnInCurrentSection(Vec3 pos)
@@ -121,7 +122,7 @@ internal class AdimiToolsDuelSpawnFrame : SpawnFrameBehaviorBase
     }
 
     // Tries to get the closest respawn to death position
-    public MatrixFrame GetBestRespawn(Vec3 deathPosition)
+    public MatrixFrame GetBestRespawn(Vec3 deathPosition, bool hasMount = false)
     {
         float closestDistance = float.MaxValue;
         GameEntity? closestSpawnSection = null;
@@ -160,6 +161,11 @@ internal class AdimiToolsDuelSpawnFrame : SpawnFrameBehaviorBase
 
         foreach (GameEntity spawnPoint in currentSpawnList!)
         {
+            if (!IsCompatibleSpawn(spawnPoint, hasMount))
+            {
+                continue;
+            }
+
             float distance = deathPosition.Distance(spawnPoint.GlobalPosition);
             if (distance < closestDistance)
             {
@@ -170,11 +176,17 @@ internal class AdimiToolsDuelSpawnFrame : SpawnFrameBehaviorBase
 
         if (closestSpawnpoint == null)
         {
-            return GetSpawnFrameFromSpawnPoints(SpawnPoints.ToList(), null, false);
+            return GetSpawnFrameFromSpawnPoints(SpawnPoints.Where(spawnPoint => IsCompatibleSpawn(spawnPoint, hasMount)).ToList(), null, hasMount);
         }
 
         MatrixFrame globalFrame = closestSpawnpoint.GetGlobalFrame();
         globalFrame.rotation.OrthonormalizeAccordingToForwardAndKeepUpAsZAxis();
         return globalFrame;
+    }
+
+    private static bool IsCompatibleSpawn(GameEntity spawnPoint, bool hasMount)
+    {
+        return (!hasMount || !spawnPoint.HasTag("exclude_mounted"))
+            && (hasMount || !spawnPoint.HasTag("exclude_footmen"));
     }
 }

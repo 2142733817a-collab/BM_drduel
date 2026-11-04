@@ -214,8 +214,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 DuelConfig duelConfig1 = PlayersDuelConfig.GetValueOrDefault(_challengers[0].NetworkPeer!.VirtualPlayer.Id)!;
                 FirstToLimit = duelConfig1.FirstToLimit;
 
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"You are fighting against {_challengers[1].NetworkPeer!.UserName} in a first to {FirstToLimit}.");
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"You are fighting against {_challengers[0].NetworkPeer!.UserName} in a first to {FirstToLimit}.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"你与 {_challengers[1].NetworkPeer!.UserName} 的对局已开始：FT{FirstToLimit}，先赢 {FirstToLimit} 局获胜。");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"你与 {_challengers[0].NetworkPeer!.UserName} 的对局已开始：FT{FirstToLimit}，先赢 {FirstToLimit} 局获胜。");
             }
 
             Started = false;
@@ -266,7 +266,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                     int loserDamage = _winnerChallengerType == ChallengerType.Requestee ? RequesterDamageDealt : RequesteeDamageDealt;
                     if (winnerScore == FirstToLimit || loserScore == FirstToLimit)
                     {
-                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} beat {loserPeer.Name} in a Ft{FirstToLimit}! | {winnerScore} - {loserScore} ({winnerDamage} - {loserDamage})", false);
+                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} 在 FT{FirstToLimit} 对局中战胜了 {loserPeer.Name}！比分 {winnerScore}:{loserScore}（伤害 {winnerDamage}:{loserDamage}）", false);
                     }
                 }
             }
@@ -407,7 +407,6 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     public static readonly Dictionary<PlayerId, DuelConfig> PlayersDuelConfig = new();
     public static readonly FactionColor AdminColor = new() { PrimaryColor = 127, IconColor = 116 };
     public List<FactionColor> PlayerColors { get; private set; }
-    private const int MinBountyGain = 100;
     private const float DuelRequestTimeOutServerToleranceInSeconds = 0.5f;
     private const float CorpseFadeOutTimeInSeconds = 10f;
     private readonly List<DuelInfo> _duelRequests;
@@ -418,9 +417,11 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     private readonly Queue<Team> _deactiveDuelTeams;
     private readonly List<KeyValuePair<MissionPeer, TroopType>> _peersAndSelections;
     private readonly SpawnComponent _spawnComponent;
+    private readonly Dictionary<UsableMissionObject, GameEntity?> _teleportDoorTargets = new();
     private MissionTimer? _teleportCheckTimer;
     private MissionTimer? _sheetWeaponCheckTimer;
     private AdimiToolsDuelMarkerSync? _duelMarkerSync;
+    private AdimiToolsAiDuelDisplay? _aiDuelDisplay;
 
     public delegate void OnDuelEndedDelegate(MissionPeer winnerPeer, TroopType troopType);
     public override bool IsGameModeHidingAllAgentVisuals => true;
@@ -544,7 +545,22 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         _sheetWeaponCheckTimer = new MissionTimer(0.5f);
         InitSpawnedWeapons();
         InitTeleportDoors();
-        _duelMarkerSync = new AdimiToolsDuelMarkerSync(Mission, IsPeerBusyForMarkerUpdates);
+        _duelMarkerSync = new AdimiToolsDuelMarkerSync(Mission, IsPeerBusyForMarkerUpdates, IsPeerInAiChallengeForMarkerUpdates);
+        _aiDuelDisplay = new AdimiToolsAiDuelDisplay(Mission,
+            peer => IsPeerBusyForMarkerUpdates(peer, true) || IsPeerInAiChallengeForMarkerUpdates(peer),
+            _duelMarkerSync.OnTargetRestored);
+    }
+
+    public override void OnClearScene()
+    {
+        _aiDuelDisplay?.Clear();
+        base.OnClearScene();
+    }
+
+    public override void OnRemoveBehavior()
+    {
+        _aiDuelDisplay?.Clear();
+        base.OnRemoveBehavior();
     }
 
     public override void OnBehaviorInitialize()
@@ -644,6 +660,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         }
 
         _duelMarkerSync?.Tick(dt);
+        _aiDuelDisplay?.Tick(dt);
     }
 
     public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
@@ -704,6 +721,36 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         }
 
         return -1;
+    }
+
+    public override void OnObjectUsed(Agent userAgent, UsableMissionObject usedObject)
+    {
+        base.OnObjectUsed(userAgent, usedObject);
+        if (!GameNetwork.IsServerOrRecorder || userAgent == null || !userAgent.IsActive() || !userAgent.IsHuman
+            || !ReferenceEquals(userAgent.CurrentlyUsedGameObject, usedObject)
+            || !_teleportDoorTargets.TryGetValue(usedObject, out GameEntity? target))
+        {
+            return;
+        }
+
+        MissionPeer? peer = userAgent.MissionPeer;
+        NetworkCommunicator? networkPeer = peer?.GetNetworkPeer();
+        if (networkPeer == null || !networkPeer.IsConnectionActive || !networkPeer.IsSynchronized
+            || !ReferenceEquals(peer!.ControlledAgent, userAgent))
+        {
+            return;
+        }
+
+        // Native use validation and StandingPoint.OnUse have already run. Stop
+        // before the gate's next tick can treat the user as an opening request.
+        userAgent.StopUsingGameObject(isSuccessful: true, StopUsingGameObjectFlags.None);
+        if (target == null)
+        {
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "此传送门的标签或落点配置有误，请联系管理员。");
+            return;
+        }
+
+        AdimiToolsTeleportDoors.TeleportToTarget(userAgent, target);
     }
 
     public override void OnAgentBuild(Agent agent, Banner banner)
@@ -781,17 +828,67 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     internal bool IsPeerBusyForAiChallenge(MissionPeer peer)
     {
         // Deliberately excludes AI reservations: the owner can add hits during
-        // their countdown while all real PvP lifecycle stages remain blocked.
+        // their countdown. Receiving an unanswered invitation does not reserve
+        // its recipient; only their own outgoing request remains busy.
+        return IsPeerInRealDuelForAiChallenge(peer)
+            || _duelRequests.Any(d => ReferenceEquals(d.RequesterPeer, peer));
+    }
+
+    internal bool IsPeerInRealDuelForAiChallenge(MissionPeer peer)
+    {
         return _activeDuels.Any(d => d.IsPeerInThisDuel(peer))
             || _endingDuels.Any(d => d.IsPeerInThisDuel(peer))
             || _restartingDuels.Any(d => d.IsPeerInThisDuel(peer))
-            || _restartPreparationDuels.Any(d => d.IsPeerInThisDuel(peer))
-            || _duelRequests.Any(d => d.IsPeerInThisDuel(peer));
+            || _restartPreparationDuels.Any(d => d.IsPeerInThisDuel(peer));
+    }
+
+    internal int CancelIncomingDuelRequestsForAiChallenge(MissionPeer peer)
+    {
+        // Only authoritative pending invitations are discarded. Native has no
+        // request-cancel packet: its client prompt expires normally after 10s.
+        // Do not emit DuelEnded for an invitation which never became a duel.
+        return _duelRequests.RemoveAll(d => ReferenceEquals(d.RequesteePeer, peer));
     }
 
     internal int GetFirstToLimitForAiChallenge(MissionPeer peer)
     {
         return PlayersDuelConfig.TryGetValue(peer.Peer.Id, out DuelConfig? config) ? config.FirstToLimit : 1;
+    }
+
+    internal void BeginAiChallengeDisplay(int arenaId, MissionPeer owner, Agent template, int totalAiCount, int difficulty, string? troopName = null)
+    {
+        _aiDuelDisplay?.Begin(arenaId, owner, troopName ?? template.Character.Name.ToString(), totalAiCount, difficulty);
+    }
+
+    internal void RecordAiChallengeDisplayRound(int arenaId, bool playerWon)
+    {
+        _aiDuelDisplay?.RoundEnded(arenaId, playerWon);
+    }
+
+    internal void EndAiChallengeDisplay(int arenaId)
+    {
+        _aiDuelDisplay?.End(arenaId);
+    }
+
+    internal int RecordAiChallengeResult(MissionPeer peer, bool playerWon)
+    {
+        DuelMissionRepresentative representative = peer.GetComponent<DuelMissionRepresentative>()
+            ?? throw new InvalidOperationException("AI result requires the player's native duel representative.");
+        int scoreBefore = representative.Score;
+        if (playerWon)
+        {
+            ApplyDuelWinReward(representative, AdimiToolsDuelScorePolicy.CalculateAiWinReward(representative.NumberOfWins));
+        }
+        else
+        {
+            representative.ResetBountyAndNumberOfWins();
+        }
+
+        // Native lobby already records the real kills/deaths. Only publish the
+        // native duel score/streak/bounty fields here, without fake duel events.
+        PublishDuelPoints(representative);
+
+        return representative.Score - scoreBefore;
     }
 
     protected override void HandleNewClientAfterSynchronized(NetworkCommunicator networkPeer)
@@ -811,7 +908,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         foreach (NetworkCommunicator networkPeer2 in GameNetwork.NetworkPeers)
         {
             DuelMissionRepresentative duelMissionRepresentative = networkPeer2.GetComponent<DuelMissionRepresentative>();
-            if (duelMissionRepresentative != null)
+            if (duelMissionRepresentative != null && IsDuelPointsRepresentable(duelMissionRepresentative))
             {
                 GameNetwork.BeginModuleEventAsServer(networkPeer);
                 GameNetwork.WriteMessage(new DuelPointsUpdateMessage(duelMissionRepresentative));
@@ -841,7 +938,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         if (synchronizedPeer != null)
         {
             _duelMarkerSync?.ResetObserver(synchronizedPeer);
+            _aiDuelDisplay?.LateJoin(synchronizedPeer);
         }
+
+        Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.SynchronizeLadders(networkPeer);
     }
 
     protected override void HandleEarlyPlayerDisconnect(NetworkCommunicator networkPeer)
@@ -849,6 +949,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         MissionPeer missionPeer = networkPeer.GetComponent<MissionPeer>();
         if (missionPeer != null)
         {
+            _aiDuelDisplay?.RemovePeer(missionPeer);
             _duelMarkerSync?.RemovePeer(missionPeer);
         }
 
@@ -884,7 +985,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             duelConfig.DeathFrame = null;
             duelConfig.LastTeleportWarningTimer = MissionTime.Now;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"You are in a first to {duelConfig.FirstToLimit} mode. Use !ft 1-10 or hit an anvil to change it.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"当前为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。输入 !ft 1-10 或敲击对应物品可切换。");
         }
     }
 
@@ -893,6 +994,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         registerer.RegisterBaseHandler<NetworkMessages.FromClient.DuelRequest>(HandleClientEventDuelRequest);
         registerer.RegisterBaseHandler<DuelResponse>(HandleClientEventDuelRequestAccepted);
         registerer.RegisterBaseHandler<RequestChangePreferredTroopType>(HandleClientEventDuelRequestChangePreferredTroopType);
+    }
+
+    protected override void OnEndMission()
+    {
+        _aiDuelDisplay?.Clear();
+        base.OnEndMission();
     }
 
     protected override void HandleEarlyNewClientAfterLoadingFinished(NetworkCommunicator networkPeer)
@@ -919,6 +1026,53 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         }
     }
 
+    private static void ApplyDuelWinReward(DuelMissionRepresentative representative, float requestedScore)
+    {
+        int maximumScore = CompressionMatchmaker.ScoreCompressionInfo.GetMaximumValue();
+        int maximumWins = CompressionMatchmaker.KillDeathAssistCountCompressionInfo.GetMaximumValue();
+        if (representative.NumberOfWins < maximumWins)
+        {
+            float boundedScore = AdimiToolsDuelScorePolicy.LimitWinReward(requestedScore, representative.Score, representative.Bounty, maximumScore);
+            representative.OnDuelWon(boundedScore);
+        }
+    }
+
+    private static bool IsDuelPointsRepresentable(DuelMissionRepresentative representative)
+    {
+        CompressionInfo.Integer score = CompressionMatchmaker.ScoreCompressionInfo;
+        CompressionInfo.Integer wins = CompressionMatchmaker.KillDeathAssistCountCompressionInfo;
+        return AdimiToolsDuelScorePolicy.IsRepresentable(representative.Score, score.GetMaximumValue())
+            && AdimiToolsDuelScorePolicy.IsRepresentable(representative.Bounty, score.GetMaximumValue())
+            && AdimiToolsDuelScorePolicy.IsRepresentable(representative.NumberOfWins, wins.GetMaximumValue());
+    }
+
+    private static void PublishDuelPoints(DuelMissionRepresentative representative)
+    {
+        NetworkCommunicator? networkPeer = representative.GetNetworkPeer();
+        if (networkPeer == null || !networkPeer.IsConnectionActive || !IsDuelPointsRepresentable(representative))
+        {
+            return;
+        }
+
+        try
+        {
+            GameNetwork.BeginBroadcastModuleEvent();
+            try
+            {
+                GameNetwork.WriteMessage(new DuelPointsUpdateMessage(representative));
+            }
+            finally
+            {
+                GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.None);
+            }
+        }
+        catch (Exception exception)
+        {
+            // Stats already changed: packet failure must never repeat the award.
+            AdimiToolsConsoleLog.Log($"Duel points broadcast failed: {exception.Message}");
+        }
+    }
+
     private bool HaveMatchingDuelLimits(MissionPeer requesterPeer, MissionPeer requesteePeer)
     {
         NetworkCommunicator? requesterNetworkPeer = requesterPeer.GetNetworkPeer();
@@ -928,7 +1082,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             if (requesterNetworkPeer != null)
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, "Duel mode is not ready. Please try again.");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, "对局模式尚未准备好，请稍后重试。");
             }
 
             return false;
@@ -941,12 +1095,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
         if (requesterNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} is in first to {requesteeConfig.FirstToLimit}; you are in first to {requesterConfig.FirstToLimit}. Both players must select the same limit. Use !ft {requesteeConfig.FirstToLimit} or hit the matching anvil.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} 选择了 FT{requesteeConfig.FirstToLimit}，你选择了 FT{requesterConfig.FirstToLimit}。双方胜场设置必须相同；可输入 !ft {requesteeConfig.FirstToLimit} 或敲击对应物品切换。");
         }
 
         if (requesteeNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} is in first to {requesterConfig.FirstToLimit}; you are in first to {requesteeConfig.FirstToLimit}. Both players must select the same limit. Use !ft {requesterConfig.FirstToLimit} or hit the matching anvil.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} 选择了 FT{requesterConfig.FirstToLimit}，你选择了 FT{requesteeConfig.FirstToLimit}。双方胜场设置必须相同；可输入 !ft {requesterConfig.FirstToLimit} 或敲击对应物品切换。");
         }
 
         return false;
@@ -1008,7 +1162,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     {
         foreach (Agent agent in Mission.AllAgents)
         {
-            if (agent.Team != Mission.Teams.Attacker || !agent.IsActive())
+            if (agent.Team != Mission.Teams.Attacker || !agent.IsActive() || !agent.IsHuman || agent.MissionPeer == null)
             {
                 continue;
             }
@@ -1024,12 +1178,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
                 float dist1 = activeDuel.RequesteePeer.ControlledAgent.Position.Distance(agentVec3);
                 float dist2 = activeDuel.RequesterPeer.ControlledAgent.Position.Distance(agentVec3);
-                if (dist1 < 2.5f || dist2 < 2.5f)
+                if (dist1 < AdimiToolsDuelInterference.EvictionDistance || dist2 < AdimiToolsDuelInterference.EvictionDistance)
                 {
                     agent.TeleportToPosition(((AdimiToolsDuelSpawnFrame)_spawnComponent.SpawnFrameBehavior).GetRandomSpawnInCurrentSection(agentVec3).origin);
-                    AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "Please keep your distance from ongoing duels!", true);
+                    AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "你距离正在决斗的玩家不足 1 米，已被遣返。", true);
                 }
-                else if (dist1 < 4f || dist2 < 4f)
+                else if (dist1 < AdimiToolsDuelInterference.WarningDistance || dist2 < AdimiToolsDuelInterference.WarningDistance)
                 {
                     MissionPeer? missionPeer = agent.MissionPeer;
                     if (missionPeer != null)
@@ -1037,8 +1191,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                         DuelConfig duelConfig = PlayersDuelConfig.GetValueOrDefault(missionPeer.Peer.Id)!;
                         if (duelConfig != null && duelConfig.LastTeleportWarningTimer < MissionTime.Now)
                         {
-                            duelConfig.LastTeleportWarningTimer = MissionTime.Now + MissionTime.Seconds(5); // Print msg every 5sec if the player is too close.
-                            AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "Please keep your distance from ongoing duels or you will be teleported!", true);
+                            duelConfig.LastTeleportWarningTimer = MissionTime.Now + MissionTime.Seconds(AdimiToolsDuelInterference.WarningIntervalSeconds);
+                            AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "请与正在决斗的玩家保持距离，靠近 1 米内将被遣返。", true);
                         }
                     }
                 }
@@ -1106,8 +1260,15 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             || _endingDuels.Any(d => d.IsPeerInThisDuel(peer))
             || _restartingDuels.Any(d => d.IsPeerInThisDuel(peer))
             || _restartPreparationDuels.Any(d => d.IsPeerInThisDuel(peer))
-            || (includeRequests && _duelRequests.Any(d => d.IsPeerInThisDuel(peer)))
-            || Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.IsPeerReserved(peer) == true;
+            || (includeRequests && _duelRequests.Any(d => d.IsPeerInThisDuel(peer)));
+    }
+
+    private bool IsPeerInAiChallengeForMarkerUpdates(MissionPeer peer)
+    {
+        // AI reservations have no genuine participant DuelStarted/DuelEnded
+        // flow. Hide them explicitly through the marker policy instead of
+        // treating them as real PvP participants whose UI must be left alone.
+        return Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.IsPeerReserved(peer) == true;
     }
 
     private bool IsThereARequestBetweenPeers(MissionPeer requesterAgent, MissionPeer requesteeAgent)
@@ -1286,24 +1447,14 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
             if (!forceEnd)
             {
-                float gainedScore = TaleWorlds.Library.MathF.Max(MinBountyGain, component2.Bounty) * TaleWorlds.Library.MathF.Max(1f, (float)mPHeroClassForPeer.TroopCasualCost / mPHeroClassForPeer2.TroopCasualCost) * TaleWorlds.Library.MathF.Pow(System.MathF.E, component.NumberOfWins / 10f);
-                component.OnDuelWon(gainedScore);
+                float gainedScore = AdimiToolsDuelScorePolicy.CalculateWinReward(component2.Bounty, mPHeroClassForPeer.TroopCasualCost, mPHeroClassForPeer2.TroopCasualCost, component.NumberOfWins);
+                ApplyDuelWinReward(component, gainedScore);
             }
 
-            if (challengeWinnerPeer.Peer.Communicator.IsConnectionActive)
-            {
-                GameNetwork.BeginBroadcastModuleEvent();
-                GameNetwork.WriteMessage(new DuelPointsUpdateMessage(component));
-                GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.None);
-            }
+            PublishDuelPoints(component);
 
             component2.ResetBountyAndNumberOfWins();
-            if (challengeLoserPeer.Peer.Communicator.IsConnectionActive)
-            {
-                GameNetwork.BeginBroadcastModuleEvent();
-                GameNetwork.WriteMessage(new DuelPointsUpdateMessage(component2));
-                GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.None);
-            }
+            PublishDuelPoints(component2);
         }
 
         MissionPeer peerComponent = challengeWinnerPeer ?? duel.RequesterPeer;
@@ -1356,7 +1507,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
                     // Yes, there are tons of simpler approaches, unfortunately there is a bug with Bannerlord atm which leads to invisible weapons for some players occosionally.
                     // This approach eliminates this issue the most of the times. I know it makes no sense.
-                    MissionWeapon missionWeapon = new(spawnedItem.ItemObject, null, null, (short)(spawnedItem.ItemObject.ItemType != ItemObject.ItemTypeEnum.Shield ? 1 : maxHp));
+                    Banner? shieldBanner = spawnedItem.ItemObject.ItemType == ItemObject.ItemTypeEnum.Shield
+                        ? AdimiToolsDuelAppearance.CreateBanner(agent.MissionPeer?.Culture)
+                        : null;
+                    MissionWeapon missionWeapon = new(spawnedItem.ItemObject, null, shieldBanner, (short)(spawnedItem.ItemObject.ItemType != ItemObject.ItemTypeEnum.Shield ? 1 : maxHp));
                     agent.EquipWeaponWithNewEntity(wieldedItemIndex, ref missionWeapon);
                     // agent.WieldNextWeapon(HandIndex.MainHand, WeaponWieldActionType.InstantAfterPickUp);
                     agent.TryToWieldWeaponInSlot(wieldedItemIndex, WeaponWieldActionType.InstantAfterPickUp, false);
@@ -1392,6 +1546,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             {
                 SpawnSpecificWeapon(itemObject, gameEntity.GetFrame(), gameEntity.Parent, false);
             }
+            else
+            {
+                AdimiToolsConsoleLog.Log($"Weapon rack item not found: {gameEntity.Name} (rack: {parent.Name}).");
+            }
         }
 
         foreach (int limit in AdimiToolsDuelModes.AnvilLimits)
@@ -1415,60 +1573,53 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     private void InitTeleportDoors()
     {
-        AdimiToolsConsoleLog.Log("InitTeleportDoors");
-        IEnumerable<GameEntity> gameEntities = Mission.Scene.FindEntitiesWithTag("teleport_door");
-        AdimiToolsConsoleLog.Log("Found: " + gameEntities.Count());
-        foreach (GameEntity door in gameEntities)
+        _teleportDoorTargets.Clear();
+        List<GameEntity> doors = Mission.Scene.FindEntitiesWithTag("teleport_door").ToList();
+        AdimiToolsConsoleLog.Log($"InitTeleportDoors: found {doors.Count} doors; preserving native CastleGate and StandingPoint scripts.");
+        foreach (GameEntity door in doors)
         {
-            // Fetch the "CastleGate" script which is used client side to enable us to interact native compatible with the door
-            CastleGate gateScript = door.GetFirstScriptOfType<CastleGate>();
-            int missionObjectId = gateScript.Id.Id; // Save the mission object id of the castle gate
-            gateScript.Id = MissionObjectId.Invalid;
-            door.RemoveScriptComponent(gateScript.ScriptComponent.Pointer, 0);
-
-            // Create a new fake usable object
-            door.CreateAndAddScriptComponent("AdimiToolsTeleportDoors", callScriptCallbacks: true);
-            AdimiToolsTeleportDoors teleportDoorScript = door.GetFirstScriptOfType<AdimiToolsTeleportDoors>();
-            teleportDoorScript.Id = new MissionObjectId(missionObjectId); // Set the old original castle gate Mission Object Id as teleport door id -> Client packets will end up in this method instead.
-
-            MBList<StandingPoint> standingPoints = door.CollectScriptComponentsIncludingChildrenRecursive<StandingPoint>();
-            foreach (StandingPoint standingPoint in standingPoints)
+            CastleGate? gate = door.GetFirstScriptOfType<CastleGate>();
+            string[] routeTags = door.Tags.Where(tag => tag.StartsWith("teleport_door_", StringComparison.Ordinal)).Distinct().ToArray();
+            int standingPointCount = gate?.StandingPoints.Count ?? 0;
+            string context = $"Teleport door '{door.Name}' at {door.GlobalPosition}, routes [{string.Join(", ", routeTags)}], standing points {standingPointCount}";
+            if (gate == null || gate.Id.Id < 0 || standingPointCount == 0)
             {
-                WeakGameEntity standingPointGameEntity = standingPoint.GameEntity;
-                int standingPointMissionObjectId = standingPoint.Id.Id;
-                standingPoint!.Id = MissionObjectId.Invalid;
-                standingPointGameEntity!.RemoveScriptComponent(standingPoint.ScriptComponent.Pointer, 0);
-                standingPointGameEntity.CreateAndAddScriptComponent("AdimiToolsTeleportDoorStandingPoint", callScriptCallbacks: true);
-                AdimiToolsTeleportDoorStandingPoint teleportDoorStandingPoint = standingPointGameEntity.GetFirstScriptOfType<AdimiToolsTeleportDoorStandingPoint>();
-                teleportDoorStandingPoint.SetParentDoor(door);
-                teleportDoorStandingPoint.Id = new MissionObjectId(standingPointMissionObjectId);
-            }
-
-            string? targetTag = null;
-            foreach (string tag in door.Tags)
-            {
-                if (tag.StartsWith("teleport_door_"))
-                {
-                    targetTag = tag;
-                    break;
-                }
-            }
-
-            if (targetTag == null)
-            {
+                AdimiToolsConsoleLog.Log(context + ": skipped; missing native CastleGate or standing points.");
                 continue;
             }
 
-            IEnumerable<GameEntity> entities = Mission.Scene.FindEntitiesWithTag(targetTag);
-            foreach (GameEntity targetLocationEntity in entities)
+            foreach (StandingPoint point in gate.StandingPoints)
             {
-                if (targetLocationEntity.HasTag("teleport_door") || !targetLocationEntity.HasTag("teleport_target"))
-                {
-                    continue;
-                }
+                _teleportDoorTargets[point] = null;
+            }
 
-                teleportDoorScript.SetupDoor(targetLocationEntity);
-                break;
+            if (routeTags.Length != 1 || routeTags[0].Length == "teleport_door_".Length)
+            {
+                AdimiToolsConsoleLog.Log(context + ": skipped; keep exactly one numbered route tag.");
+                continue;
+            }
+
+            string targetTag = routeTags[0];
+            List<GameEntity> targets = Mission.Scene.FindEntitiesWithTag(targetTag)
+                .Where(targetLocationEntity => !targetLocationEntity.HasTag("teleport_door") && targetLocationEntity.HasTag("teleport_target"))
+                .ToList();
+            if (targets.Count != 1 || targets[0].Tags.Count(tag => tag.StartsWith("teleport_door_", StringComparison.Ordinal)) != 1)
+            {
+                AdimiToolsConsoleLog.Log(context + $": skipped; expected one unambiguous teleport_target, found {targets.Count}.");
+                continue;
+            }
+
+            GameEntity target = targets[0];
+            foreach (StandingPoint point in gate.StandingPoints)
+            {
+                _teleportDoorTargets[point] = target;
+            }
+
+            AdimiToolsConsoleLog.Log(context + $": ready -> '{target.Name}' at {target.GlobalPosition}.");
+            Vec3 scale = door.GetGlobalFrame().rotation.GetScaleVector();
+            if (System.MathF.Abs(scale.x - scale.y) > 0.01f || System.MathF.Abs(scale.x - scale.z) > 0.01f)
+            {
+                AdimiToolsConsoleLog.Log(context + $": non-uniform scale {scale}; native physical focus may fail. Use uniform scale for the interactive gate root.");
             }
         }
     }
@@ -1476,6 +1627,18 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     private void SpawnSpecificWeapon(ItemObject itemObject, MatrixFrame frame, GameEntity parent, bool lifeTime, bool respawn = true)
     {
         MissionObject missionObject = parent.GetFirstScriptOfType<SynchedMissionObject>();
+        // The native spawn API treats the frame as local only when a synced
+        // parent is supplied. Plain scene racks need a world frame instead.
+        // Keep the original local frame for subsequent weapon respawns.
+        MatrixFrame spawnFrame = frame;
+        if (missionObject == null)
+        {
+            spawnFrame = parent.GetGlobalFrame().TransformToParent(in frame);
+            if (!spawnFrame.rotation.IsOrthonormal())
+            {
+                spawnFrame.rotation.Orthonormalize();
+            }
+        }
 
         int maxHp = 1;
         if (itemObject.Weapons != null && itemObject.ItemType == ItemObject.ItemTypeEnum.Shield)
@@ -1487,7 +1650,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         }
 
         MissionWeapon missionWeapon = new(itemObject, null, null, (short)(itemObject.ItemType != ItemObject.ItemTypeEnum.Shield ? 1 : maxHp));
-        GameEntity placedEntity = Mission.Current.SpawnWeaponWithNewEntityAux(missionWeapon, Mission.WeaponSpawnFlags.WithStaticPhysics | Mission.WeaponSpawnFlags.WithoutHolster, frame, -1, missionObject, lifeTime);
+        GameEntity placedEntity = Mission.Current.SpawnWeaponWithNewEntityAux(missionWeapon, Mission.WeaponSpawnFlags.WithStaticPhysics | Mission.WeaponSpawnFlags.WithoutHolster, spawnFrame, -1, missionObject, lifeTime);
         _ = new ItemSpawns(itemObject, placedEntity.GetFirstScriptOfType<SpawnedItemEntity>(), frame, parent, respawn);
     }
 }

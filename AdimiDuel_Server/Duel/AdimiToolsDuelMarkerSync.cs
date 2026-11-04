@@ -11,16 +11,19 @@ internal sealed class AdimiToolsDuelMarkerSync
     private const float UpdateInterval = 0.5f;
     private readonly Mission _mission;
     private readonly Func<MissionPeer, bool, bool> _isBusy;
+    private readonly Func<MissionPeer, bool> _isInAiChallenge;
     private readonly AdimiToolsDuelMarkerVisibility<MissionPeer> _visibility = new();
     private readonly Dictionary<MissionPeer, HashSet<MissionPeer>> _recoveryTargets = new();
     private readonly int _arenaIndex;
     private float _elapsed;
     private bool _enabled;
 
-    public AdimiToolsDuelMarkerSync(Mission mission, Func<MissionPeer, bool, bool> isBusy)
+    public AdimiToolsDuelMarkerSync(Mission mission, Func<MissionPeer, bool, bool> isBusy,
+        Func<MissionPeer, bool>? isInAiChallenge = null)
     {
         _mission = mission;
         _isBusy = isBusy;
+        _isInAiChallenge = isInAiChallenge ?? (_ => false);
         _arenaIndex = FindArenaIndex(mission);
         _enabled = _arenaIndex >= 0
             && !string.Equals(Environment.GetEnvironmentVariable("ADIMI_DUEL_DISTANCE_MARKERS"), "0", StringComparison.Ordinal);
@@ -55,13 +58,14 @@ internal sealed class AdimiToolsDuelMarkerSync
         }
 
         // Do not rescan all duel lists for every observer/target pair.
-        var targetBusy = peers.ToDictionary(p => p, p => p.Team != _mission.AttackerTeam || _isBusy(p, false));
+        var inAiChallenge = peers.ToDictionary(p => p, p => _isInAiChallenge(p));
+        var targetBusy = peers.ToDictionary(p => p, p => (!inAiChallenge[p] && p.Team != _mission.AttackerTeam) || _isBusy(p, false));
         var observerBusy = peers.ToDictionary(p => p, p => _isBusy(p, true));
         var positions = peers.ToDictionary(p => p, p => p.ControlledAgent?.Position);
         var active = peers.ToDictionary(p => p, p => p.ControlledAgent?.IsActive() ?? false);
         foreach (MissionPeer observer in peers)
         {
-            if (!active[observer] || observer.Team != _mission.AttackerTeam || observerBusy[observer])
+            if (!active[observer] || (!inAiChallenge[observer] && observer.Team != _mission.AttackerTeam) || observerBusy[observer])
             {
                 continue;
             }
@@ -70,7 +74,8 @@ internal sealed class AdimiToolsDuelMarkerSync
                 target,
                 positions[target].HasValue ? positions[observer].GetValueOrDefault().DistanceSquared(positions[target].GetValueOrDefault()) : float.NaN,
                 active[target],
-                targetBusy[target]));
+                targetBusy[target],
+                MustHide: inAiChallenge[observer] || inAiChallenge[target]));
             DuelMarkerBatch<MissionPeer> batch = _visibility.Plan(observer, targets, canUpdate: true);
             if (!batch.IsEmpty)
             {
@@ -86,6 +91,15 @@ internal sealed class AdimiToolsDuelMarkerSync
     public void OnRealDuelEnded(MissionPeer first, MissionPeer second)
     {
         _visibility.OnRealDuelEnded(first, second);
+    }
+
+    public void OnTargetRestored(MissionPeer observer, MissionPeer target)
+    {
+        _visibility.OnTargetRestored(observer, target);
+        if (_recoveryTargets.TryGetValue(observer, out HashSet<MissionPeer>? targets))
+        {
+            targets.Remove(target);
+        }
     }
 
     public void ResetObserver(MissionPeer observer)
@@ -169,7 +183,7 @@ internal sealed class AdimiToolsDuelMarkerSync
         {
             MissionPeer observer = entry.Key;
             if (!connectedPeers.Contains(observer) || observer.Team != _mission.AttackerTeam
-                || !(observer.ControlledAgent?.IsActive() ?? false) || _isBusy(observer, true))
+                || !(observer.ControlledAgent?.IsActive() ?? false) || _isBusy(observer, true) || _isInAiChallenge(observer))
             {
                 continue;
             }
@@ -206,6 +220,13 @@ internal sealed class AdimiToolsDuelMarkerSync
                     // Real duel participants are restored by their genuine
                     // DuelEnded, not synthetic UI.
                     entry.Value.Remove(target);
+                    continue;
+                }
+
+                if (_isInAiChallenge(target))
+                {
+                    // AI participants receive no genuine DuelEnded. Retain the
+                    // queued restoration until their complete series ends.
                     continue;
                 }
 

@@ -9,7 +9,7 @@ internal class FirstToDuelCommand : ChatCommand
     {
         Name = "ft";
         Alias = new string[] { "firstto" };
-        Description = $"'{ChatCommandsComponent.CommandPrefix}{Name} [number between 1 and 10] to set your duel limit.";
+        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1到10的整数] 设置先赢多少局获胜。";
         Overloads = new CommandOverload[]
         {
             new(new[] { ChatCommandParameterType.Int32 }, Execute),
@@ -33,8 +33,8 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (!AdimiDuel_Server.Duel.AdimiToolsDuelModes.IsValidLimit(input))
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "Use !ft 1-10");
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "Example: !ft 7 sets you into a first to 7 mode.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "请输入 !ft 1-10。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "例如：!ft 7 表示先赢 7 局获胜。");
             return;
         }
 
@@ -46,18 +46,18 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (missionPeer.Team?.IsDefender == true)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You cannot change the duel mode mid duel.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "对局进行中，无法切换胜场设置。");
             return;
         }
 
         if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig))
         {
             duelConfig.FirstToLimit = input;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"You are now in a first to {duelConfig.FirstToLimit} mode. Your opponent must select the same limit.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"已切换为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。对手需要选择相同的胜场设置。");
         }
         else
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"An error occured.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "无法读取对局设置，请稍后重试。");
         }
     }
 }

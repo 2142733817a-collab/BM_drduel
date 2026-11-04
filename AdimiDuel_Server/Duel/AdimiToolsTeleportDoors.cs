@@ -23,14 +23,7 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
 
             if (_targetPoint != null)
             {
-                userAgent.TeleportToPosition(_targetPoint.GetGlobalFrame().origin);
-
-                WorldPosition worldPosition = new(Mission.Current.Scene, _targetPoint.GetGlobalFrame().origin);
-                WorldFrame worldFrame = new(_targetPoint.GetGlobalFrame().rotation, worldPosition);
-                Vec2 vec = worldFrame.Rotation.f.AsVec2.Normalized();
-                GameNetwork.BeginBroadcastModuleEvent();
-                GameNetwork.WriteMessage(new AgentTeleportToFrame(userAgent.Index, worldFrame.Origin.GetGroundVec3(), vec));
-                GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord, null);
+                TeleportToTarget(userAgent, _targetPoint);
             }
         }
     }
@@ -43,5 +36,17 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
     public override TextObject GetDescriptionText(WeakGameEntity gameEntity)
     {
         return new TextObject("Teleport");
+    }
+
+    internal static void TeleportToTarget(Agent userAgent, GameEntity targetPoint)
+    {
+        MatrixFrame frame = targetPoint.GetGlobalFrame();
+        userAgent.TeleportToPosition(frame.origin);
+        WorldPosition worldPosition = new(Mission.Current.Scene, frame.origin);
+        WorldFrame worldFrame = new(frame.rotation, worldPosition);
+        Vec2 direction = worldFrame.Rotation.f.AsVec2.Normalized();
+        GameNetwork.BeginBroadcastModuleEvent();
+        GameNetwork.WriteMessage(new AgentTeleportToFrame(userAgent.Index, worldFrame.Origin.GetGroundVec3(), direction));
+        GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord, null);
     }
 }

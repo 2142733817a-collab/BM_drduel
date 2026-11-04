@@ -10,12 +10,17 @@ internal sealed class AdimiToolsAiArenaTrigger : MissionObject
 {
     private AdimiToolsAiArenaBehavior? _arenaBehavior;
     private int _groupId;
+    private int _difficulty = AdimiToolsAiArenaDifficulty.Simple;
 
-    public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId)
+    public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId, int difficulty = AdimiToolsAiArenaDifficulty.Simple)
     {
         _arenaBehavior = arenaBehavior;
         _groupId = groupId;
+        _difficulty = difficulty;
     }
+
+    public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId, bool enhanced)
+        => Bind(arenaBehavior, groupId, enhanced ? AdimiToolsAiArenaDifficulty.Normal : AdimiToolsAiArenaDifficulty.Simple);
 
     protected override bool OnHit(Agent attackerAgent, int damage, Vec3 impactPosition, Vec3 impactDirection, in MissionWeapon weapon, int affectorWeaponSlotOrMissileIndex, ScriptComponentBehavior attackerScriptComponentBehavior, out bool reportDamage, out float finalDamage, out float fireDamage, out float modifiedFireDamage)
     {
@@ -29,7 +34,7 @@ internal sealed class AdimiToolsAiArenaTrigger : MissionObject
             // must not steal the arena from the player standing at its terminal.
             if (attackerAgent.Position.DistanceSquared(impactPosition) <= 36f)
             {
-                _arenaBehavior?.OnTriggerHit(_groupId, attackerAgent);
+                _arenaBehavior?.OnTriggerHit(_groupId, attackerAgent, _difficulty);
             }
         }
 
