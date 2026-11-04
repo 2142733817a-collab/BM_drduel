@@ -7,7 +7,12 @@
 		<RootNamespace>AdimiDuel_Server</RootNamespace>
 		<AssemblyName>AdimiDuel_Server</AssemblyName>
 		<ModuleName>AdimiDuel_Server</ModuleName>
-		<OutputPath>$(MB_SERVER_PATH)\Modules\$(ModuleName)\bin\Win64_Shipping_Server</OutputPath>
+		<!-- Building must not install files into a running game/server implicitly. -->
+		<DeployToBannerlordServer Condition="'$(DeployToBannerlordServer)' == ''">False</DeployToBannerlordServer>
+		<BannerlordValidationBuild Condition="'$(BannerlordValidationBuild)' == ''">False</BannerlordValidationBuild>
+		<BannerlordReferencePlatform Condition="'$(BannerlordReferencePlatform)' == ''">Win64_Shipping_Server</BannerlordReferencePlatform>
+		<BannerlordReferencePath>$(MB_SERVER_PATH)\bin\$(BannerlordReferencePlatform)</BannerlordReferencePath>
+		<OutputPath Condition="'$(BannerlordOutputPath)' != ''">$(BannerlordOutputPath)</OutputPath>
 		<AppendTargetFrameworkToOutputPath>False</AppendTargetFrameworkToOutputPath>
 		<DefineConstants>$(DefineConstants);ADIMI_SERVER</DefineConstants>
 		<GeneratePackageOnBuild>False</GeneratePackageOnBuild>
@@ -15,40 +20,56 @@
 	</PropertyGroup>
 
 
-  <Target Name="CheckMbPathDefined" BeforeTargets="GetReferenceAssemblyPaths">
+  <Target Name="CheckMbPathDefined" BeforeTargets="PrepareForBuild;GetReferenceAssemblyPaths">
     <Error Text="Environment variable MB_SERVER_PATH should be set to your Bannerlord server installation path" Condition="'$(MB_SERVER_PATH)' == ''" />
+    <Error Text="BannerlordReferencePlatform must be Win64_Shipping_Server or Linux64_Shipping_Server." Condition="'$(BannerlordReferencePlatform)' != 'Win64_Shipping_Server' and '$(BannerlordReferencePlatform)' != 'Linux64_Shipping_Server'" />
+    <Error Text="MB_SERVER_PATH and BannerlordReferencePlatform must identify a dedicated-server directory containing TaleWorlds.MountAndBlade.dll." Condition="!Exists('$(BannerlordReferencePath)\TaleWorlds.MountAndBlade.dll')" />
+    <Error Text="Validation builds cannot deploy to a Bannerlord server." Condition="'$(BannerlordValidationBuild)' == 'True' and '$(DeployToBannerlordServer)' == 'True'" />
+    <Error Text="Validation builds require an absolute BannerlordOutputPath outside the server installation." Condition="'$(BannerlordValidationBuild)' == 'True' and ('$(BannerlordOutputPath)' == '' or !$([System.IO.Path]::IsPathRooted('$(BannerlordOutputPath)')))" />
+    <Error Text="Validation builds require an absolute BaseIntermediateOutputPath for isolated build intermediates." Condition="'$(BannerlordValidationBuild)' == 'True' and !$([System.IO.Path]::IsPathRooted('$(BaseIntermediateOutputPath)'))" />
+    <Error Text="Validation output must not be inside MB_SERVER_PATH." Condition="'$(BannerlordValidationBuild)' == 'True' and $([System.IO.Path]::GetFullPath('$(BannerlordOutputPath)').StartsWith($([System.IO.Path]::GetFullPath('$(MB_SERVER_PATH)')), System.StringComparison.OrdinalIgnoreCase))" />
+    <Error Text="The effective OutputPath of a validation build must not be inside MB_SERVER_PATH." Condition="'$(BannerlordValidationBuild)' == 'True' and $([System.IO.Path]::GetFullPath('$(OutputPath)').StartsWith($([System.IO.Path]::GetFullPath('$(MB_SERVER_PATH)')), System.StringComparison.OrdinalIgnoreCase))" />
+    <Error Text="Validation intermediates must not be inside MB_SERVER_PATH." Condition="'$(BannerlordValidationBuild)' == 'True' and $([System.IO.Path]::GetFullPath('$(BaseIntermediateOutputPath)').StartsWith($([System.IO.Path]::GetFullPath('$(MB_SERVER_PATH)')), System.StringComparison.OrdinalIgnoreCase))" />
+    <Error Text="The effective IntermediateOutputPath of a validation build must not be inside MB_SERVER_PATH." Condition="'$(BannerlordValidationBuild)' == 'True' and $([System.IO.Path]::GetFullPath('$(IntermediateOutputPath)').StartsWith($([System.IO.Path]::GetFullPath('$(MB_SERVER_PATH)')), System.StringComparison.OrdinalIgnoreCase))" />
   </Target>
 
-  <Target Name="PostBuild" AfterTargets="Build">
-    <Exec Command="xcopy /Y /I &quot;$(OutputPath)\*.*&quot; &quot;$(MB_SERVER_PATH)\Modules\$(ModuleName)\bin\Linux64_Shipping_Server\&quot;" />
+  <Target Name="PostBuild" AfterTargets="Build" Condition="'$(DeployToBannerlordServer)' == 'True' and '$(BannerlordValidationBuild)' != 'True'">
+    <PropertyGroup>
+      <_BannerlordModulePath>$(MB_SERVER_PATH)\Modules\$(ModuleName)</_BannerlordModulePath>
+    </PropertyGroup>
+    <ItemGroup>
+      <_BannerlordDeployFiles Include="$(TargetDir)*.*" />
+    </ItemGroup>
+    <MakeDir Directories="$(_BannerlordModulePath)\bin\Win64_Shipping_Server;$(_BannerlordModulePath)\bin\Linux64_Shipping_Server" />
+    <Copy SourceFiles="@(_BannerlordDeployFiles)" DestinationFolder="$(_BannerlordModulePath)\bin\Win64_Shipping_Server" SkipUnchangedFiles="True" />
+    <Copy SourceFiles="@(_BannerlordDeployFiles)" DestinationFolder="$(_BannerlordModulePath)\bin\Linux64_Shipping_Server" SkipUnchangedFiles="True" />
+    <Copy SourceFiles="$(MSBuildProjectDirectory)\SubModule.xml" DestinationFolder="$(_BannerlordModulePath)" SkipUnchangedFiles="True" />
   </Target>
-  
-  <ItemGroup>
-    <ContentWithTargetPath Include="SubModule.xml" TargetPath="..\..\%(Identity)" CopyToOutputDirectory="PreserveNewest" />
-  </ItemGroup>
 	<ItemGroup>
-		<Reference Include="$(MB_SERVER_PATH)\bin\Win64_Shipping_Server\TaleWorlds.*.dll">
+		<Reference Include="$(BannerlordReferencePath)\TaleWorlds.*.dll">
 			<Private>False</Private>
 		</Reference>
 
-    <Reference Include="$(MB_SERVER_PATH)\bin\Win64_Shipping_Server\Newtonsoft.Json.dll">
+    <Reference Include="$(BannerlordReferencePath)\Newtonsoft.Json.dll">
       <Private>False</Private>
     </Reference>
     
-    <Reference Include="$(MB_SERVER_PATH)\bin\Win64_Shipping_Server\Microsoft.AspNetCore.Mvc.NewtonsoftJson.dll">
+    <Reference Include="$(BannerlordReferencePath)\Microsoft.AspNetCore.Mvc.NewtonsoftJson.dll">
       <Private>False</Private>
     </Reference>
 
 		<!-- Remove native library (not .NET). -->
-		<Reference Remove="$(MB_SERVER_PATH)/bin/Win64_Shipping_Server/TaleWorlds.Native.dll" />
+		<Reference Remove="$(BannerlordReferencePath)/TaleWorlds.Native.dll" />
 		<!-- These libraries cause dependency conflicts. -->
-		<Reference Remove="$(MB_SERVER_PATH)/bin/Win64_Shipping_Server/TaleWorlds.Starter.DotNetCore.dll" />
-		<Reference Remove="$(MB_SERVER_PATH)/bin/Win64_Shipping_Server/TaleWorlds.MountAndBlade.DedicatedCustomServer.MapServer.dll" />
-		<Reference Remove="$(MB_SERVER_PATH)/bin/Win64_Shipping_Server/TaleWorlds.MountAndBlade.DedicatedCustomServer.WebPanel.Views.dll" />
-		<Reference Remove="$(MB_SERVER_PATH)/bin/Win64_Shipping_Server/TaleWorlds.MountAndBlade.DedicatedCustomServer.WebPanel.dll" />
+		<Reference Remove="$(BannerlordReferencePath)/TaleWorlds.Starter.DotNetCore.dll" />
+		<Reference Remove="$(BannerlordReferencePath)/TaleWorlds.MountAndBlade.DedicatedCustomServer.MapServer.dll" />
+		<Reference Remove="$(BannerlordReferencePath)/TaleWorlds.MountAndBlade.DedicatedCustomServer.WebPanel.Views.dll" />
+		<Reference Remove="$(BannerlordReferencePath)/TaleWorlds.MountAndBlade.DedicatedCustomServer.WebPanel.dll" />
 	</ItemGroup>
 	<ItemGroup>
-		<Compile Include="..\AdimiTools_Shared\**" />
+		<!-- Keep stale local build outputs out when validation redirects obj elsewhere. -->
+		<Compile Remove="obj\**;bin\**" />
+		<Compile Include="..\AdimiTools_Shared\**\*.cs" Exclude="..\AdimiTools_Shared\obj\**;..\AdimiTools_Shared\bin\**" />
 	</ItemGroup>
 
   <ItemGroup>

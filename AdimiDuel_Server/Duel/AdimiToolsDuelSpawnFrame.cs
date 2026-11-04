@@ -55,6 +55,27 @@ internal class AdimiToolsDuelSpawnFrame : SpawnFrameBehaviorBase
         return GetSpawnFrameFromSpawnPoints(SpawnPoints.ToList(), team, hasMount);
     }
 
+    public MatrixFrame? GetTroopSpawnFrame(AdimiToolsDuelSpawnClass spawnClass, Team team, bool hasMount)
+    {
+        List<GameEntity> matchingSpawnPoints = SpawnPoints.Where(spawnPoint =>
+            AdimiToolsDuelSpawnPolicy.IsExclusiveMatch(
+                spawnClass,
+                spawnPoint.HasTag(AdimiToolsDuelSpawnPolicy.InfantryTag),
+                spawnPoint.HasTag(AdimiToolsDuelSpawnPolicy.RangedTag),
+                spawnPoint.HasTag(AdimiToolsDuelSpawnPolicy.CavalryTag)) &&
+            (!hasMount || !spawnPoint.HasTag("exclude_mounted")) &&
+            (hasMount || !spawnPoint.HasTag("exclude_footmen"))).ToList();
+
+        if (matchingSpawnPoints.Count == 0)
+        {
+            return null;
+        }
+
+        // Keep the native candidate scoring so nearby enemies and occupied areas
+        // make a matching point less desirable instead of choosing by tag alone.
+        return GetSpawnFrameFromSpawnPoints(matchingSpawnPoints, team, hasMount);
+    }
+
     public MatrixFrame GetRandomSectionSpawn(string section)
     {
         if (section == "B")

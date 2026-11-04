@@ -22,7 +22,7 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
 
     public override void OnTick(float dt)
     {
-        if (IsSpawningEnabled && _spawnCheckTimer.Check(Mission.Current.CurrentTime))
+        if (IsSpawningEnabled && SpawnCheckTimer.Check(Mission.Current.CurrentTime))
         {
             SpawnAgents();
         }
@@ -35,9 +35,24 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             }
 
             MissionPeer missionPeer = networkPeer.GetComponent<MissionPeer>();
-            if (missionPeer == null || missionPeer.ControlledAgent != null || !missionPeer.HasSpawnedAgentVisuals || CanUpdateSpawnEquipment(missionPeer))
+            AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
+            bool isAiRoundRespawn = missionPeer != null && aiArena?.GetRoundRespawnFrame(missionPeer).HasValue == true;
+            if (missionPeer == null || missionPeer.ControlledAgent != null || !missionPeer.HasSpawnedAgentVisuals
+                || (!isAiRoundRespawn && CanUpdateSpawnEquipment(missionPeer)))
             {
                 continue;
+            }
+
+            if (aiArena?.ShouldDelayRespawn(missionPeer) == true)
+            {
+                continue;
+            }
+
+            if (isAiRoundRespawn)
+            {
+                // Only an owned, unfinished AI series bypasses the normal
+                // loadout confirmation wait, after its server countdown.
+                missionPeer.EquipmentUpdatingExpired = true;
             }
 
             MultiplayerClassDivisions.MPHeroClass mPHeroClassForPeer = MultiplayerClassDivisions.GetMPHeroClassForPeer(missionPeer);
@@ -136,24 +151,34 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             agentBuildData.Age((int)agentBuildData.AgentBodyProperties.Age);
             agentBuildData.Team(missionPeer.Team); // Set team again, otherwise might break in duel / teamswitch etc.
             RemoveUnallowedItems(ref agentBuildData); // Remove unallowed items etc. - also used to remove cosmetic only items (i.e clan warrior who doesnt ahve a helmet by defualt)
+            aiArena?.ConfigureRoundRespawn(missionPeer, agentBuildData);
 
             MatrixFrame? getSpawnFrame;
+            MatrixFrame? aiRoundRespawn = aiArena?.GetRoundRespawnFrame(missionPeer);
             if (playerDuelData != null && playerDuelData.RespawnFrame != null) // Spawn here during a duel
             {
                 getSpawnFrame = (MatrixFrame)playerDuelData.RespawnFrame!;
             }
+            else if (aiRoundRespawn.HasValue)
+            {
+                getSpawnFrame = aiRoundRespawn.Value;
+            }
             else if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig) && duelConfig.DeathFrame != null) // Use this after duels
             {
-                getSpawnFrame = ((AdimiToolsDuelSpawnFrame)SpawnComponent.SpawnFrameBehavior).GetBestRespawn(duelConfig.DeathFrame!.Value.origin);
+                AdimiToolsDuelSpawnClass spawnClass = GetSpawnClass(mPHeroClassForPeer);
+                AdimiToolsDuelSpawnFrame spawnFrameBehavior = (AdimiToolsDuelSpawnFrame)SpawnComponent.SpawnFrameBehavior;
+                getSpawnFrame = spawnFrameBehavior.GetTroopSpawnFrame(spawnClass, missionPeer.Team, false) ?? spawnFrameBehavior.GetBestRespawn(duelConfig.DeathFrame.Value.origin);
             }
             else
             {
-                getSpawnFrame = ((AdimiToolsDuelSpawnFrame)SpawnComponent.SpawnFrameBehavior).GetRandomSectionSpawn("A");
+                AdimiToolsDuelSpawnClass spawnClass = GetSpawnClass(mPHeroClassForPeer);
+                AdimiToolsDuelSpawnFrame spawnFrameBehavior = (AdimiToolsDuelSpawnFrame)SpawnComponent.SpawnFrameBehavior;
+                getSpawnFrame = spawnFrameBehavior.GetTroopSpawnFrame(spawnClass, missionPeer.Team, false) ?? spawnFrameBehavior.GetRandomSectionSpawn("A");
             }
 
             MatrixFrame spawnFrame = (MatrixFrame)getSpawnFrame;
 
-            if (spawnFrame.IsIdentity)
+            if (spawnFrame.IsIdentity && !aiRoundRespawn.HasValue)
             {
                 AdimiToolsConsoleLog.Log($"Trying to spawn case spawnFrame.IsIdentity {missionPeer.Name}");
                 continue;
@@ -283,6 +308,21 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
                 }
             }
         }
+    }
+
+    private AdimiToolsDuelSpawnClass GetSpawnClass(MultiplayerClassDivisions.MPHeroClass heroClass)
+    {
+        return heroClass.HeroCharacter.DefaultFormationClass switch
+        {
+            FormationClass.Infantry => AdimiToolsDuelSpawnClass.Infantry,
+            FormationClass.HeavyInfantry => AdimiToolsDuelSpawnClass.Infantry,
+            FormationClass.Ranged => AdimiToolsDuelSpawnClass.Ranged,
+            FormationClass.Cavalry => AdimiToolsDuelSpawnClass.Cavalry,
+            FormationClass.HorseArcher => AdimiToolsDuelSpawnClass.Cavalry,
+            FormationClass.LightCavalry => AdimiToolsDuelSpawnClass.Cavalry,
+            FormationClass.HeavyCavalry => AdimiToolsDuelSpawnClass.Cavalry,
+            _ => AdimiToolsDuelSpawnClass.Unknown,
+        };
     }
 
     private void HandleDuelAgentVisualSpawning(NetworkCommunicator spawningNetworkPeer, AgentBuildData spawningAgentBuildData, int troopCountInFormation = 0, bool useCosmetics = true)

@@ -1,6 +1,7 @@
 ﻿using NetworkMessages.FromServer;
 using TaleWorlds.Engine;
 using TaleWorlds.Library;
+using TaleWorlds.Localization;
 using TaleWorlds.MountAndBlade;
 
 namespace AdimiDuel_Server.Duel;
@@ -9,12 +10,12 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
 {
     private GameEntity? _targetPoint;
 
-    public override void OnUse(Agent userAgent)
+    public override void OnUse(Agent userAgent, sbyte agentBoneIndex)
     {
         if (userAgent != null && userAgent.IsActive() && userAgent.IsHuman)
         {
-            MissionPeer missionPeer = userAgent.MissionPeer;
-            NetworkCommunicator? networkPeer = missionPeer.GetNetworkPeer();
+            MissionPeer? missionPeer = userAgent.MissionPeer;
+            NetworkCommunicator? networkPeer = missionPeer?.GetNetworkPeer();
             if (missionPeer == null || networkPeer == null)
             {
                 return;
@@ -39,8 +40,8 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
         _targetPoint = targetPoint;
     }
 
-    public override string GetDescriptionText(GameEntity gameEntity)
+    public override TextObject GetDescriptionText(WeakGameEntity gameEntity)
     {
-        return "Teleport";
+        return new TextObject("Teleport");
     }
 }
