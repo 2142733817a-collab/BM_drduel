@@ -9,6 +9,11 @@ internal sealed class AdimiToolsAiArenaApplyDamageModel : MultiplayerAgentApplyD
 {
     public override float ApplyGeneralDamageModifiers(in AttackInformation attackInformation, in AttackCollisionData collisionData, float baseDamage)
     {
+        if (Mission.Current?.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.ShouldBlockDamage(attackInformation.AttackerAgent, attackInformation.VictimAgent) == true)
+        {
+            return 0f;
+        }
+
         if (!AdimiToolsAiArenaStrikeMagnitudeModel.HasMoloch(in attackInformation))
         {
             return base.ApplyGeneralDamageModifiers(in attackInformation, in collisionData, baseDamage);

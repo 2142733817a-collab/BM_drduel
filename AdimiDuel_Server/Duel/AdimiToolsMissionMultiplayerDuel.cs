@@ -214,8 +214,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 DuelConfig duelConfig1 = PlayersDuelConfig.GetValueOrDefault(_challengers[0].NetworkPeer!.VirtualPlayer.Id)!;
                 FirstToLimit = duelConfig1.FirstToLimit;
 
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"你与 {_challengers[1].NetworkPeer!.UserName} 的对局已开始：FT{FirstToLimit}，先赢 {FirstToLimit} 局获胜。");
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"你与 {_challengers[0].NetworkPeer!.UserName} 的对局已开始：FT{FirstToLimit}，先赢 {FirstToLimit} 局获胜。");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"你与 {_challengers[1].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"你与 {_challengers[0].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。");
             }
 
             Started = false;
@@ -266,7 +266,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                     int loserDamage = _winnerChallengerType == ChallengerType.Requestee ? RequesterDamageDealt : RequesteeDamageDealt;
                     if (winnerScore == FirstToLimit || loserScore == FirstToLimit)
                     {
-                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} 在 FT{FirstToLimit} 对局中战胜了 {loserPeer.Name}！比分 {winnerScore}:{loserScore}（伤害 {winnerDamage}:{loserDamage}）", false);
+                        AdimiToolsNotifier.AdminAnnouncement(null, $"{winnerPeer.Name} 在{AdimiToolsDuelModes.GetModeName(FirstToLimit)}对局中战胜了 {loserPeer.Name}！比分 {winnerScore}:{loserScore}（伤害 {winnerDamage}:{loserDamage}）", false);
                     }
                 }
             }
@@ -574,6 +574,11 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     public override bool CheckIfPlayerCanDespawn(MissionPeer missionPeer)
     {
+        if (Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(missionPeer) == true)
+        {
+            return false;
+        }
+
         if (Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.IsPeerReserved(missionPeer) == true)
         {
             return false;
@@ -597,6 +602,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     public void DuelRequestReceived(MissionPeer requesterPeer, MissionPeer requesteePeer)
     {
+        var teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
+        if (teamBattle?.IsPeerReserved(requesterPeer) == true || teamBattle?.IsPeerReserved(requesteePeer) == true)
+        {
+            return;
+        }
+
         AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
         if (aiArena?.IsPeerReserved(requesterPeer) == true || aiArena?.IsPeerReserved(requesteePeer) == true)
         {
@@ -618,6 +629,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     public void DuelRequestAccepted(Agent requesterAgent, Agent requesteeAgent)
     {
+        var teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
+        if (teamBattle?.IsPeerReserved(requesterAgent.MissionPeer) == true || teamBattle?.IsPeerReserved(requesteeAgent.MissionPeer) == true)
+        {
+            return;
+        }
+
         AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
         if (aiArena?.IsPeerReserved(requesterAgent.MissionPeer) == true || aiArena?.IsPeerReserved(requesteeAgent.MissionPeer) == true)
         {
@@ -744,6 +761,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         // Native use validation and StandingPoint.OnUse have already run. Stop
         // before the gate's next tick can treat the user as an opening request.
         userAgent.StopUsingGameObject(isSuccessful: true, StopUsingGameObjectFlags.None);
+        if (Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer!) == true)
+        {
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "组队对战准备或进行中，暂时不能使用传送门。");
+            return;
+        }
+
         if (target == null)
         {
             AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "此传送门的标签或落点配置有误，请联系管理员。");
@@ -823,6 +846,16 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     internal static void RestoreAgentForAiChallenge(Agent agent)
     {
         RestoreAgent(agent);
+        // Refill the existing item, including thrown weapons currently using
+        // their melee mode. Never replace equipment or reselect wielded slots.
+        for (EquipmentIndex slot = EquipmentIndex.WeaponItemBeginSlot; slot < EquipmentIndex.NumAllWeaponSlots; slot++)
+        {
+            MissionWeapon weapon = agent.Equipment[slot];
+            if (!weapon.IsEmpty && weapon.IsAnyConsumable() && weapon.Amount < weapon.ModifiedMaxAmount)
+            {
+                agent.SetWeaponAmountInSlot(slot, weapon.ModifiedMaxAmount, enforcePrimaryItem: true);
+            }
+        }
     }
 
     internal bool IsPeerBusyForAiChallenge(MissionPeer peer)
@@ -985,7 +1018,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             duelConfig.DeathFrame = null;
             duelConfig.LastTeleportWarningTimer = MissionTime.Now;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"当前为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。输入 !ft 1-10 或敲击对应物品可切换。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"当前为{AdimiToolsDuelModes.GetModeName(duelConfig.FirstToLimit)}。敲击对应物品，或输入 !ft 1 / !ft 2 / !ft 3 切换。");
         }
     }
 
@@ -1095,12 +1128,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
         if (requesterNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} 选择了 FT{requesteeConfig.FirstToLimit}，你选择了 FT{requesterConfig.FirstToLimit}。双方胜场设置必须相同；可输入 !ft {requesteeConfig.FirstToLimit} 或敲击对应物品切换。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} 选择了{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}，你选择了{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}。双方胜制必须相同；可输入 !ft {requesteeConfig.FirstToLimit} 或敲击对应物品切换。");
         }
 
         if (requesteeNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} 选择了 FT{requesterConfig.FirstToLimit}，你选择了 FT{requesteeConfig.FirstToLimit}。双方胜场设置必须相同；可输入 !ft {requesterConfig.FirstToLimit} 或敲击对应物品切换。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} 选择了{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}，你选择了{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}。双方胜制必须相同；可输入 !ft {requesterConfig.FirstToLimit} 或敲击对应物品切换。");
         }
 
         return false;
@@ -1268,7 +1301,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         // AI reservations have no genuine participant DuelStarted/DuelEnded
         // flow. Hide them explicitly through the marker policy instead of
         // treating them as real PvP participants whose UI must be left alone.
-        return Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.IsPeerReserved(peer) == true;
+        return Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.IsPeerReserved(peer) == true
+            || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true;
     }
 
     private bool IsThereARequestBetweenPeers(MissionPeer requesterAgent, MissionPeer requesteeAgent)
@@ -1554,19 +1588,34 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
         foreach (int limit in AdimiToolsDuelModes.AnvilLimits)
         {
-            foreach (GameEntity anvilEntity in Mission.Scene.FindEntitiesWithTag(AdimiToolsDuelModes.GetAnvilTag(limit)))
+            foreach (GameEntity anvilEntity in AdimiToolsDuelModes.GetAnvilTags(limit).SelectMany(tag => Mission.Scene.FindEntitiesWithTag(tag)).Distinct())
             {
                 if (AdimiToolsDuelModes.GetAnvilLimit(anvilEntity.Tags) == 0)
                 {
-                    AdimiToolsConsoleLog.Log($"Skipped anvil {anvilEntity.Name}: select exactly one FT3, FT5 or FT7 tag.");
+                    AdimiToolsConsoleLog.Log($"Skipped anvil {anvilEntity.Name}: select exactly one best-of mode.");
                     continue;
                 }
 
                 if (anvilEntity.GetFirstScriptOfType<AdimiToolsDuelFt7Anvil>() == null)
                 {
                     anvilEntity.CreateAndAddScriptComponent("AdimiToolsDuelFt7Anvil", callScriptCallbacks: true);
-                    AdimiToolsConsoleLog.Log($"Added ft{limit} anvil");
+                    AdimiToolsConsoleLog.Log($"Added {AdimiToolsDuelModes.GetModeName(limit)} anvil");
                 }
+            }
+        }
+
+        foreach (GameEntity selector in Mission.Scene.FindEntitiesWithTag(AdimiToolsDuelModes.CycleTag))
+        {
+            if (AdimiToolsDuelModes.GetInteractionLimit(selector.Tags, 1) == 0)
+            {
+                AdimiToolsConsoleLog.Log($"Skipped mode selector {selector.Name}: do not mix cycle and fixed best-of tags.");
+                continue;
+            }
+
+            if (selector.GetFirstScriptOfType<AdimiToolsDuelFt7Anvil>() == null)
+            {
+                selector.CreateAndAddScriptComponent("AdimiToolsDuelFt7Anvil", callScriptCallbacks: true);
+                AdimiToolsConsoleLog.Log($"Added cycling best-of selector: {selector.Name}");
             }
         }
     }

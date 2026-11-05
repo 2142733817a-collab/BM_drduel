@@ -9,7 +9,7 @@ internal class FirstToDuelCommand : ChatCommand
     {
         Name = "ft";
         Alias = new string[] { "firstto" };
-        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1到10的整数] 设置先赢多少局获胜。";
+        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1/2/3] 设置目标胜场：1=一局定胜负，2=三局两胜，3=五局三胜。";
         Overloads = new CommandOverload[]
         {
             new(new[] { ChatCommandParameterType.Int32 }, Execute),
@@ -33,8 +33,8 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (!AdimiDuel_Server.Duel.AdimiToolsDuelModes.IsValidLimit(input))
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "请输入 !ft 1-10。");
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "例如：!ft 7 表示先赢 7 局获胜。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "请输入 !ft 1、!ft 2 或 !ft 3，数字表示先赢多少局。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "1=一局定胜负，2=三局两胜，3=五局三胜。");
             return;
         }
 
@@ -53,7 +53,7 @@ internal class FirstToDuelCommand : ChatCommand
         if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig))
         {
             duelConfig.FirstToLimit = input;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"已切换为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。对手需要选择相同的胜场设置。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"已选择{AdimiDuel_Server.Duel.AdimiToolsDuelModes.GetModeName(input)}：先赢 {input} 局获胜。一对一双方需一致；队战需全员一致，否则按单局。已开赛胜制保持不变。");
         }
         else
         {

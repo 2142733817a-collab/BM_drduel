@@ -8,7 +8,7 @@ namespace AdimiDuel_Server.Duel;
 
 internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
 {
-    // Keep the original script name so existing FT7 scene entities remain compatible.
+    // Keep the original script name so existing scene entities remain compatible.
     protected override bool OnHit(Agent attackerAgent, int damage, Vec3 impactPosition, Vec3 impactDirection, in MissionWeapon weapon, int affectorWeaponSlotOrMissileIndex, ScriptComponentBehavior attackerScriptComponentBehavior, out bool reportDamage, out float finalDamage, out float fireDamage, out float modifiedFireDamage)
     {
         reportDamage = false;
@@ -32,21 +32,14 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
 
             if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig))
             {
-                int anvilLimit = AdimiToolsDuelModes.GetAnvilLimit(GameEntity.Tags);
+                int anvilLimit = AdimiToolsDuelModes.GetInteractionLimit(GameEntity.Tags, duelConfig.FirstToLimit);
                 if (anvilLimit == 0)
                 {
                     return false;
                 }
 
-                duelConfig.FirstToLimit = AdimiToolsDuelModes.ToggleLimit(duelConfig.FirstToLimit, anvilLimit);
-                if (duelConfig.FirstToLimit == 1)
-                {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "已切换为 FT1：一局定胜负。");
-                }
-                else
-                {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"已切换为 FT{duelConfig.FirstToLimit}：先赢 {duelConfig.FirstToLimit} 局获胜。再次敲击此物品可返回 FT1，也可输入 !ft 1-10 设置。");
-                }
+                duelConfig.FirstToLimit = anvilLimit;
+                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"已选择{AdimiToolsDuelModes.GetModeName(anvilLimit)}：先赢 {anvilLimit} 局获胜。一对一双方需一致；队战需全员一致，否则按单局。已开赛胜制保持不变。");
             }
             else
             {

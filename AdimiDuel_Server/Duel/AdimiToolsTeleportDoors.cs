@@ -40,6 +40,12 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
 
     internal static void TeleportToTarget(Agent userAgent, GameEntity targetPoint)
     {
+        if (userAgent.MissionPeer != null
+            && Mission.Current.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(userAgent.MissionPeer) == true)
+        {
+            return;
+        }
+
         MatrixFrame frame = targetPoint.GetGlobalFrame();
         userAgent.TeleportToPosition(frame.origin);
         WorldPosition worldPosition = new(Mission.Current.Scene, frame.origin);

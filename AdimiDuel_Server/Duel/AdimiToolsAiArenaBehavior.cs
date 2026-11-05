@@ -37,6 +37,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public GameEntity Spawn { get; init; } = null!;
         public List<BarrierMotion> Barriers { get; init; } = new();
         public VolumeBox? Area { get; init; }
+        public AdimiToolsSharedArena? Shared { get; init; }
+        public AdimiToolsArenaGlowGroup Glows { get; init; } = null!;
+        public bool GlowsHidden { get; set; }
         public AdimiToolsAiArenaSession<MissionPeer> Session { get; } = new();
         public AdimiToolsAiArenaNavigationGuard NavigationGuard { get; } = new();
         public Agent? OwnerAgent { get; set; }
@@ -47,6 +50,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public Team? PlayerTeam { get; set; }
         public Team? BotTeam { get; set; }
         public Equipment? Equipment { get; set; }
+        public Equipment? RegularRespawnEquipment { get; set; }
         public Banner? Banner { get; set; }
         public int Difficulty { get; set; } = AdimiToolsAiArenaDifficulty.Simple;
         public bool Enhanced => Difficulty != AdimiToolsAiArenaDifficulty.Simple;
@@ -62,6 +66,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public AgentBuildData? OriginalCharacter { get; set; }
         public bool CompletionRecoveryStarted { get; set; }
         public bool CompletionHealthRestored { get; set; }
+        public double? CompletionStartedAt { get; set; }
         public bool ScoreSettled { get; set; }
         public int StartedAiCount { get; set; }
         public double NextRoundAt { get; set; }
@@ -108,6 +113,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private const float CheckInterval = 0.25f;
     private const double BarrierStepInterval = 0.05d;
+    private const double CompletedAiCleanupDelay = 3d;
+    private const double CompletedBarrierOpenDelay = 1d;
     private readonly Dictionary<int, Arena> _arenas = new();
     private readonly Dictionary<MissionPeer, CompletionRespawn> _completionRespawns = new();
     private readonly Dictionary<MissionPeer, double> _nextInterferenceWarningAt = new();
@@ -153,6 +160,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             || _arenas.Values.Any(arena => (arena.Session.IsReserved && ReferenceEquals(arena.Session.Owner, peer))
             || (arena.CleanupPending && ReferenceEquals(arena.CleanupOwner, peer)));
     }
+
+    public bool IsPositionInArena(Vec3 position) => !_sceneClearing && _arenas.Values.Any(arena => arena.Area?.IsPointIn(position) == true);
 
     public MatrixFrame? GetRoundRespawnFrame(MissionPeer peer)
     {
@@ -271,6 +280,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         double now = Mission.CurrentTime;
+        if (arena.Shared?.Owns(arena) == true && !arena.Session.IsReserved)
+        {
+            Notify(peer, "本场地仍在完成清理和障碍复位，请稍后再试。");
+            return;
+        }
+
+        if (arena.CleanupPending)
+        {
+            Notify(peer, "本组挑战正在结束，请稍后再试。");
+            return;
+        }
+
         if (arena.AreaCleanupPending && !arena.Session.IsReserved)
         {
             Notify(peer, "训练区域正在清理，请稍后再试。");
@@ -284,7 +305,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             return;
         }
 
-        if (_duelMode?.IsPeerBusyForAiChallenge(peer) == true || (!arena.Session.IsReserved && IsPeerReserved(peer)))
+        if (_duelMode?.IsPeerBusyForAiChallenge(peer) == true || (!arena.Session.IsReserved && IsPeerReserved(peer))
+            || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true
+            || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPositionInActiveArena(agent.Position) == true)
         {
             Notify(peer, "请先结束当前决斗或 AI 挑战。");
             return;
@@ -311,7 +334,19 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             return;
         }
 
+        bool acquiredShared = arena.Shared != null && !arena.Shared.Owns(arena);
+        if (arena.Shared?.TryAcquire(arena) == false)
+        {
+            Notify(peer, "本场地正在进行玩家队战或清理，请稍后再试。");
+            return;
+        }
+
         AdimiToolsAiArenaHitResult result = arena.Session.TryHit(peer, now);
+        if (acquiredShared && result != AdimiToolsAiArenaHitResult.Reserved && result != AdimiToolsAiArenaHitResult.Counted)
+        {
+            arena.Shared!.Release(arena);
+        }
+
         if (result == AdimiToolsAiArenaHitResult.OwnedByAnother || result == AdimiToolsAiArenaHitResult.AlreadyRunning)
         {
             Notify(peer, "本组 AI 挑战正在使用中。");
@@ -333,10 +368,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             if (result == AdimiToolsAiArenaHitResult.Reserved)
             {
+                arena.GlowsHidden = false;
+                arena.Glows.Update(false, now);
                 _duelMode?.CancelIncomingDuelRequestsForAiChallenge(peer);
                 arena.NavigationGuard.Reset();
                 arena.CompletionRecoveryStarted = false;
                 arena.CompletionHealthRestored = false;
+                arena.CompletionStartedAt = null;
                 arena.ScoreSettled = false;
                 arena.StartedAiCount = 0;
                 arena.PlayerDeathFrame = null;
@@ -347,6 +385,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.OwnerAgent = agent;
                 arena.OriginalTeam = peer.Team;
                 arena.Equipment = SnapshotEquipment(agent);
+                arena.RegularRespawnEquipment = SnapshotInitialEquipment(peer, agent);
                 arena.Banner = AdimiToolsDuelAppearance.CreateBanner(peer.Culture);
                 arena.MountKey = IsLivingAgent(agent.MountAgent) ? agent.MountAgent!.HorseCreationKey : null;
                 arena.OwnerRespawnFrame = arena.Spawn.GetGlobalFrame();
@@ -400,7 +439,28 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         foreach (Arena arena in _arenas.Values)
         {
-            UpdateBarrierMovement(arena, now);
+            if (arena.Shared != null && !arena.Shared.Owns(arena))
+            {
+                continue;
+            }
+
+            try
+            {
+                UpdateBarrierMovement(arena, now);
+                if (arena.GlowsHidden && !arena.Session.IsReserved && !arena.CleanupPending
+                    && !arena.AreaCleanupPending && now >= arena.LoweringUntil
+                    && arena.Shared == null)
+                {
+                    arena.GlowsHidden = false;
+                }
+
+                arena.Glows.Update(arena.GlowsHidden, now);
+                ReleaseSharedIfClean(arena, now);
+            }
+            catch (Exception exception)
+            {
+                FailArena(arena, exception);
+            }
         }
 
         if (now < _nextCheckAt)
@@ -411,7 +471,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         _nextCheckAt = now + CheckInterval;
         foreach (Arena arena in _arenas.Values)
         {
-            if (arena.Area != null && now >= arena.NextAreaCleanupAt
+            if (arena.Shared != null && !arena.Shared.Owns(arena))
+            {
+                continue;
+            }
+
+            bool activeRound = arena.Session.State == AdimiToolsAiArenaState.Running && !arena.RoundPending;
+            bool completionWaiting = arena.CompletionStartedAt.HasValue
+                && now < arena.CompletionStartedAt.Value + CompletedAiCleanupDelay;
+            if (!activeRound && !completionWaiting && arena.Area != null && now >= arena.NextAreaCleanupAt
                 && (arena.AreaCleanupPending || now <= arena.AreaCleanupUntil))
             {
                 TryAreaCleanup(arena);
@@ -597,7 +665,17 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         _sceneClearing = true;
         _completionRespawns.Clear();
         _nextInterferenceWarningAt.Clear();
+        foreach (Arena arena in _arenas.Values)
+        {
+            arena.Glows.RestoreAndForget(Mission.CurrentTime);
+        }
+
         CleanupAll();
+        foreach (Arena arena in _arenas.Values)
+        {
+            arena.Shared?.Release(arena);
+        }
+
         base.OnClearScene();
     }
 
@@ -610,6 +688,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     protected override void OnEndMission()
     {
         CleanupAll();
+        foreach (Arena arena in _arenas.Values)
+        {
+            arena.Shared?.Release(arena);
+        }
+
         base.OnEndMission();
     }
 
@@ -632,26 +715,37 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         NetworkCommunicator? networkPeer = peer.GetNetworkPeer();
         if (networkPeer != null && networkPeer.IsConnectionActive)
         {
-            GameNetwork.BeginModuleEventAsServer(networkPeer);
-            try
-            {
-                GameNetwork.WriteMessage(new ServerAdminMessage(message, true));
-            }
-            finally
-            {
-                GameNetwork.EndModuleEventAsServer();
-            }
+            // Admin broadcasts enter the client's timed quick-information
+            // queue. Repeated summon hits must reach the ordinary log now.
+            AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer, message);
         }
     }
 
     private static void MoveBarrier(Arena arena, bool raised, bool immediately = false)
+    {
+        if (arena.Shared != null)
+        {
+            if (raised)
+            {
+                arena.BarrierEngaged = true;
+            }
+
+            arena.Shared.Move(arena, raised, immediately);
+        }
+        else
+        {
+            MoveBarrierCore(arena, raised, immediately);
+        }
+    }
+
+    private static void MoveBarrierCore(Arena arena, bool raised, bool immediately = false)
     {
         if (arena.Barriers.Count == 0)
         {
             return;
         }
 
-        UpdateBarrierMovement(arena, Mission.Current.CurrentTime);
+        UpdateBarrierMovementCore(arena, Mission.Current.CurrentTime);
         if (raised)
         {
             arena.BarrierEngaged = true;
@@ -730,11 +824,45 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private static void UpdateBarrierMovement(Arena arena, double now)
     {
+        if (arena.Shared != null)
+        {
+            arena.Shared.Tick(arena, now);
+        }
+        else
+        {
+            UpdateBarrierMovementCore(arena, now);
+        }
+    }
+
+    private static void UpdateBarrierMovementCore(Arena arena, double now)
+    {
         foreach (BarrierMotion barrier in arena.Barriers)
         {
             UpdateBarrierMotion(arena.Id, barrier, now);
         }
     }
+
+    private static void UpdateSharedBoundaryMovement(Arena arena, double now)
+    {
+        UpdateBarrierMovementCore(arena, now);
+        if (arena.Barriers.Any(barrier => barrier.TargetFrame.HasValue && barrier.FinishAttempts >= 3))
+        {
+            throw new InvalidOperationException("A shared AI barrier could not reach its requested frame after three attempts.");
+        }
+    }
+
+    private static bool AreOwnBarriersAtTarget(Arena arena, bool raised)
+        => arena.Barriers.All(barrier => !barrier.TargetFrame.HasValue && barrier.Synched.SynchronizeCompleted
+            && (barrier.IsLadder
+                ? Math.Abs(barrier.CurrentPoseProgress - (raised ? 1f : 0f)) <= 0.0001f
+                : Math.Abs(barrier.Entity.GetGlobalFrame().origin.z
+                    - (barrier.LoweredFrame.origin.z + (raised ? barrier.ActiveOffsetZ : 0f))) <= 0.001f));
+
+    private static bool CanReleaseShared(Arena arena, double now)
+        => arena.Shared != null && arena.Shared.Owns(arena) && !arena.Resetting
+            && !arena.Session.IsReserved && !arena.CleanupPending && !arena.AreaCleanupPending
+            && now > arena.AreaCleanupUntil && now >= arena.LoweringUntil
+            && arena.Shared.IsAtTarget(arena, raised: false);
 
     private static void UpdateBarrierMotion(int groupId, BarrierMotion barrier, double now)
     {
@@ -952,6 +1080,28 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         return face.IsValid();
     }
 
+    private Equipment SnapshotInitialEquipment(MissionPeer peer, Agent owner)
+    {
+        // A completed loss starts a new life with the class/perks selected at
+        // reservation, independently of picked-up or dropped training weapons.
+        Equipment equipment = owner.Character.Equipment.Clone();
+        var alternatives = MPPerkObject.GetOnSpawnPerkHandler(peer)?.GetAlternativeEquipments(isPlayer: true);
+        if (alternatives != null)
+        {
+            foreach (var alternative in alternatives)
+            {
+                equipment[alternative.Item1] = alternative.Item2;
+            }
+        }
+
+        if (_duelMode != null)
+        {
+            _duelMode.AddCosmeticItemsToEquipment(equipment, _duelMode.GetUsedCosmeticsFromPeer(peer, owner.Character));
+        }
+
+        return equipment;
+    }
+
     private Equipment SnapshotEquipment(Agent owner)
     {
         Equipment equipment = owner.SpawnEquipment.Clone();
@@ -1004,6 +1154,16 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         GameNetwork.BeginBroadcastModuleEvent();
         GameNetwork.WriteMessage(new AgentTeleportToFrame(agent.Index, position.GetGroundVec3(), direction));
         GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord);
+    }
+
+    private void ReleaseSharedIfClean(Arena arena, double now)
+    {
+        if (CanReleaseShared(arena, now) && TryAreaCleanup(arena))
+        {
+            arena.GlowsHidden = false;
+            arena.Glows.Update(false, now);
+            arena.Shared!.Release(arena);
+        }
     }
 
     private void InitializeGroups()
@@ -1135,7 +1295,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             VolumeBox? area = areas.Count == 0 ? null : areas[0].GetFirstScriptOfType<VolumeBox>();
             if (invalidBarrier
                 || (areas.Count != 0 && area == null)
-                || triggers.Any(trigger => trigger.HasTag("teleport_door") || AdimiToolsDuelModes.GetAnvilLimit(trigger.Tags) != 0)
+                || triggers.Any(trigger => trigger.HasTag("teleport_door") || trigger.HasTag(AdimiToolsDuelModes.CycleTag)
+                    || AdimiToolsDuelModes.GetAnvilLimit(trigger.Tags) != 0)
                 || spawns[0].HasTag("spawnpoint"))
             {
                 AdimiToolsConsoleLog.Log($"AI group {group.Key} disabled: invalid optional script, conflicting trigger tag, or AI marker also used as a player spawnpoint.");
@@ -1159,6 +1320,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 Spawn = spawns[0],
                 Barriers = motions,
                 Area = area,
+                Shared = area != null && areas[0].HasTag("adimi_team_area") ? AdimiToolsSharedArena.For(Mission, area) : null,
+                Glows = AdimiToolsArenaGlowGroup.Create(Mission.Scene, areas.Count == 0 ? null : areas[0]),
             };
             try
             {
@@ -1180,6 +1343,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     trigger.Bind(this, arena.Id, difficulty);
                 }
 
+                arena.Shared?.RegisterBoundary(arena, isAi: true, arena.Barriers.Select(barrier => barrier.Entity),
+                    (raised, immediately) => MoveBarrierCore(arena, raised, immediately),
+                    now => UpdateSharedBoundaryMovement(arena, now),
+                    raised => AreOwnBarriersAtTarget(arena, raised));
                 _arenas.Add(arena.Id, arena);
                 AdimiToolsConsoleLog.Log($"AI group {arena.Id} ready; barrier={barriers.Count != 0}, moving roots={motions.Count}, ladder roots={motions.Count(motion => motion.IsLadder)}, inherited tagged children={movingEntities.Count - barrierRoots.Count}, area={area != null}, simple triggers={normalTriggers.Count}, normal triggers={enhancedTriggers.Count}, hard triggers={hardTriggers.Count}.");
             }
@@ -1256,6 +1423,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private void StartChallenge(Arena arena, MissionPeer owner, Agent ownerAgent, double now)
     {
+        if (arena.Shared != null && !arena.Shared.IsAtTarget(arena, raised: true))
+        {
+            return;
+        }
+
         if (!BeginAreaCleanup(arena))
         {
             return;
@@ -1291,8 +1463,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         arena.OwnerMount?.SetTeam(arena.PlayerTeam!, sync: true);
         PrepareRoundOwner(arena, ownerAgent);
         SpawnRoundBots(arena, ownerAgent);
+        arena.GlowsHidden = true;
+        arena.Glows.Update(true, now);
         _duelMode?.BeginAiChallengeDisplay(arena.Id, owner, ownerAgent, arena.StartedAiCount, arena.Difficulty, arena.HardProfile?.TroopName);
-        Notify(owner, $"已生成 {arena.Bots.Count} 个{AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty)} AI，只会与你交战。本次 FT{arena.Series.FirstToLimit}，先胜 {arena.Series.FirstToLimit} 局结束。");
+        Notify(owner, $"已生成 {arena.Bots.Count} 个{AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty)} AI，只会与你交战。本次{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}。");
     }
 
     private void SpawnRoundBots(Arena arena, Agent ownerAgent, bool activate = true)
@@ -1371,7 +1545,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         _duelMode?.RecordAiChallengeDisplayRound(arena.Id, playerWon);
         if (finished)
         {
-            ResetArena(arena, $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，{(arena.Series.WinnerPlayer == true ? "你获胜" : "AI 获胜")}。区域恢复开放。");
+            ResetArena(arena, $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，{(arena.Series.WinnerPlayer == true ? "你获胜" : "AI 获胜")}。阻挡物将在 1 秒后开始复位，AI 在 3 秒后清理。");
             return;
         }
 
@@ -1401,7 +1575,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             return;
         }
 
-        Notify(arena.Session.Owner!, $"当前比分 {arena.Series.PlayerWins}:{arena.Series.AiWins}（FT{arena.Series.FirstToLimit}）。{(arena.Bots.Count > 0 ? "存活 AI 保留" : "双方阵亡")}，复活后继续本系列。");
+        Notify(arena.Session.Owner!, $"当前比分 {arena.Series.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。{(arena.Bots.Count > 0 ? "存活 AI 保留" : "双方阵亡")}，复活后继续本系列。");
     }
 
     private void PrepareRoundSurvivors(Arena arena)
@@ -1491,12 +1665,17 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         arena.NextRoundAt = now + AdimiToolsAiArenaSession<MissionPeer>.CountdownSeconds;
-        Notify(owner, $"当前比分 {arena.Series!.PlayerWins}:{arena.Series.AiWins}（FT{arena.Series.FirstToLimit}），下一局 3 秒后开始。");
+        Notify(owner, $"当前比分 {arena.Series!.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}），下一局 3 秒后开始。");
         return true;
     }
 
     private void StartNextRound(Arena arena, MissionPeer owner, Agent ownerAgent)
     {
+        if (arena.Shared != null && !arena.Shared.IsAtTarget(arena, raised: true))
+        {
+            return;
+        }
+
         if (!BeginAreaCleanup(arena))
         {
             return;
@@ -1525,7 +1704,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             bot.SetTargetAgent(ownerAgent);
         }
 
-        Notify(owner, $"本局开始：你 {arena.Series!.PlayerWins}:{arena.Series.AiWins} AI（FT{arena.Series.FirstToLimit}）。");
+        Notify(owner, $"本局开始：你 {arena.Series!.PlayerWins}:{arena.Series.AiWins} AI（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。");
     }
 
     private bool PrepareSpawnPositions(Arena arena, Agent owner)
@@ -1594,7 +1773,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     private bool IsOutsideAllAreas(Vec3 position, Arena current)
     {
         return (current.Area == null || !current.Area.IsPointIn(position))
-            && !_arenas.Values.Any(arena => arena.Area != null && arena.Area.IsPointIn(position));
+            && !_arenas.Values.Any(arena => arena.Area != null && arena.Area.IsPointIn(position))
+            && Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPositionInArena(position) != true;
     }
 
     private MatrixFrame? GetOutsideSpawnForPlayer(Agent agent, Arena arena)
@@ -1630,7 +1810,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
             // A new challenge cannot take over a different active match. A
             // pending invitation alone does not protect a normal bystander.
-            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer))
+            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer)
+                || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true)
             {
                 failure = "训练区域内有正在对战的玩家，本次 AI 挑战已取消，请等区域空闲后重试。";
                 return false;
@@ -1695,7 +1876,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 continue;
             }
 
-            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer))
+            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer)
+                || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true)
             {
                 // Never teleport somebody out of another live PvP/AI match.
                 return false;
@@ -1718,28 +1900,20 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         if (IsLivingAgent(arena.OwnerAgent) && ReferenceEquals(owner.ControlledAgent, arena.OwnerAgent))
         {
-            try
+            if (!arena.CompletionHealthRestored)
             {
-                if (arena.Equipment != null)
-                {
-                    AdimiToolsAiArenaEquipment.Restore(arena.OwnerAgent!, arena.Equipment, arena.Banner);
-                }
-            }
-            finally
-            {
-                if (!arena.CompletionHealthRestored)
-                {
-                    arena.OwnerAgent!.HealthLimit = arena.HealthLimit;
-                    arena.OwnerAgent.BaseHealthLimit = arena.BaseHealthLimit;
-                    AdimiToolsMissionMultiplayerDuel.RestoreAgentForAiChallenge(arena.OwnerAgent);
-                    arena.CompletionHealthRestored = true;
-                }
+                // Re-equipping or wielding weapons interrupts an attack. Refill
+                // the surviving actor's current kit without replacing entities.
+                arena.OwnerAgent!.HealthLimit = arena.HealthLimit;
+                arena.OwnerAgent.BaseHealthLimit = arena.BaseHealthLimit;
+                AdimiToolsMissionMultiplayerDuel.RestoreAgentForAiChallenge(arena.OwnerAgent);
+                arena.CompletionHealthRestored = true;
             }
 
             return;
         }
 
-        if (arena.Equipment == null || arena.OriginalCharacter == null)
+        if (arena.RegularRespawnEquipment == null || arena.OriginalCharacter == null)
         {
             return;
         }
@@ -1749,26 +1923,62 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             Frame = arena.PlayerDeathFrame ?? arena.LastPlayerFrame,
             UseRegularSpawn = true,
             Character = arena.OriginalCharacter,
-            Equipment = arena.Equipment.Clone(),
+            Equipment = arena.RegularRespawnEquipment.Clone(),
             Banner = arena.Banner == null ? null : new Banner(arena.Banner),
-            MountKey = arena.MountKey,
+            MountKey = null,
             Team = arena.OriginalTeam ?? Mission.AttackerTeam,
             HealthLimit = arena.HealthLimit,
             BaseHealthLimit = arena.BaseHealthLimit,
         };
     }
 
+    private void FadeArenaActor(Agent actor)
+    {
+        if (!IsAgentPresent(actor) || actor.State == AgentState.Deleted || actor.IsFadingOut())
+        {
+            return;
+        }
+
+        Agent? rider = actor.IsMount ? actor.RiderAgent : null;
+        if (IsLivingAgent(rider) && rider!.MissionPeer != null)
+        {
+            // A human may mount a surviving AI horse during the exit delay.
+            // Never remove an occupied player mount from underneath its rider.
+            actor.SetTeam(rider.Team, sync: true);
+            return;
+        }
+
+        if (IsLivingAgent(actor) || Mission.GetMissionBehavior<MissionLobbyComponent>() is IAdimiToolsSingleRemovalLobby)
+        {
+            // The original lobby ledger prevents corpse fade callbacks from
+            // counting the same bot death twice, including groups without Box.
+            actor.FadeOut(hideInstantly: true, hideMount: false);
+        }
+    }
+
     private void ResetArena(Arena arena, string? message, bool immediately = false)
     {
-        if (arena.Resetting)
+        if (arena.Resetting || (arena.Shared != null && !arena.Shared.Owns(arena)))
         {
             return;
         }
 
         arena.Resetting = true;
-        _duelMode?.EndAiChallengeDisplay(arena.Id);
+        if (!arena.CompletionStartedAt.HasValue)
+        {
+            _duelMode?.EndAiChallengeDisplay(arena.Id);
+        }
+
         MissionPeer? owner = arena.Session.Owner ?? arena.CleanupOwner;
         NetworkCommunicator? ownerNetwork = owner?.GetNetworkPeer();
+        bool delayCompleted = !immediately && !_ending && !_sceneClearing && arena.Series?.IsComplete == true;
+        if (delayCompleted)
+        {
+            arena.CompletionStartedAt ??= Mission.CurrentTime;
+        }
+
+        bool clearAi = !delayCompleted || Mission.CurrentTime >= arena.CompletionStartedAt!.Value + CompletedAiCleanupDelay;
+        bool openBarrier = !delayCompleted || Mission.CurrentTime >= arena.CompletionStartedAt!.Value + CompletedBarrierOpenDelay;
         bool recoverCompleted = !arena.CompletionRecoveryStarted && arena.Series?.IsComplete == true
             && !_ending && !_sceneClearing && ownerNetwork != null && ownerNetwork.IsConnectionActive && ownerNetwork.IsSynchronized;
         arena.CleanupOwner = owner;
@@ -1790,9 +2000,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     if (IsLivingAgent(bot))
                     {
                         bot.SetTargetAgent(null!);
-                        bot.FadeOut(hideInstantly: true, hideMount: false);
                     }
 
+                    if (!clearAi)
+                    {
+                        return;
+                    }
+
+                    FadeArenaActor(bot);
                     arena.Bots.Remove(bot);
                 }, failures);
             }
@@ -1801,11 +2016,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 AttemptCleanup(() =>
                 {
-                    if (IsLivingAgent(mount))
+                    if (!clearAi)
                     {
-                        mount.FadeOut(hideInstantly: true, hideMount: false);
+                        return;
                     }
 
+                    FadeArenaActor(mount);
                     arena.Mounts.Remove(mount);
                 }, failures);
             }
@@ -1871,9 +2087,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }, failures);
             }
 
-            BeginAreaCleanup(arena);
+            if (clearAi)
+            {
+                BeginAreaCleanup(arena);
+            }
 
-            if (arena.BarrierEngaged || immediately)
+            if ((openBarrier && arena.BarrierEngaged) || immediately)
             {
                 AttemptCleanup(() =>
                 {
@@ -1899,13 +2118,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
         finally
         {
-            arena.CleanupPending = failures.Count != 0;
-            if (arena.CleanupPending)
+            bool completionWaiting = delayCompleted && (!clearAi || arena.BarrierEngaged);
+            arena.CleanupPending = failures.Count != 0 || completionWaiting;
+            if (completionWaiting && !clearAi)
+            {
+                double deadline = arena.CompletionStartedAt!.Value
+                    + (!openBarrier && arena.BarrierEngaged ? CompletedBarrierOpenDelay : CompletedAiCleanupDelay);
+                _nextCheckAt = Math.Min(_nextCheckAt, deadline);
+            }
+
+            if (failures.Count != 0)
             {
                 arena.Failed = true;
                 AdimiToolsConsoleLog.Log($"AI group {arena.Id} cleanup will retry: {new AggregateException(failures)}");
             }
-            else
+            else if (!completionWaiting)
             {
                 arena.CleanupOwner = null;
                 arena.OwnerAgent = null;
@@ -1914,6 +2141,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.MountKey = null;
                 arena.OriginalTeam = null;
                 arena.Equipment = null;
+                arena.RegularRespawnEquipment = null;
+                arena.CompletionStartedAt = null;
                 arena.Banner = null;
                 arena.Difficulty = AdimiToolsAiArenaDifficulty.Simple;
                 arena.HardProfile = null;
@@ -1927,6 +2156,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.NextRoundAt = 0d;
                 arena.RespawnDeadline = 0d;
                 arena.SpawnPositions.Clear();
+                if (!arena.AreaCleanupPending && Mission.CurrentTime >= arena.LoweringUntil && arena.Shared == null)
+                {
+                    arena.GlowsHidden = false;
+                    arena.Glows.Update(false, Mission.CurrentTime);
+                }
             }
 
             arena.Resetting = false;
@@ -1966,6 +2200,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             catch (Exception exception)
             {
                 AdimiToolsConsoleLog.Log($"AI group {arena.Id} mission cleanup failed: {exception}");
+            }
+            finally
+            {
+                if (!_sceneClearing)
+                {
+                    arena.Glows.RestoreAndForget(Mission.CurrentTime);
+                }
+                else
+                {
+                    arena.Glows.Forget();
+                }
+
+                if (CanReleaseShared(arena, Mission.CurrentTime))
+                {
+                    arena.Shared?.Release(arena);
+                }
             }
         }
     }

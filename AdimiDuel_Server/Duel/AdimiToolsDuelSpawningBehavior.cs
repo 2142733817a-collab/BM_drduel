@@ -34,10 +34,17 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             }
 
             MissionPeer missionPeer = networkPeer.GetComponent<MissionPeer>();
+            AdimiToolsTeamBattleBehavior? teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
+            if (missionPeer != null && teamBattle?.ShouldDelayRespawn(missionPeer) == true)
+            {
+                continue;
+            }
+
             AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
             bool hasPendingAiRespawn = missionPeer != null && aiArena?.HasPendingAiRespawn(missionPeer) == true;
+            bool hasPendingTeamRespawn = missionPeer != null && teamBattle?.HasPendingRoundRespawn(missionPeer) == true;
             if (missionPeer == null || missionPeer.ControlledAgent != null || !missionPeer.HasSpawnedAgentVisuals
-                || (!hasPendingAiRespawn && CanUpdateSpawnEquipment(missionPeer)))
+                || (!hasPendingAiRespawn && !hasPendingTeamRespawn && CanUpdateSpawnEquipment(missionPeer)))
             {
                 continue;
             }
@@ -47,9 +54,9 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
                 continue;
             }
 
-            if (hasPendingAiRespawn)
+            if (hasPendingAiRespawn || hasPendingTeamRespawn)
             {
-                // AI series rounds and completed-series death-frame recovery
+                // Series round replacements and completed AI loss recovery
                 // use the original visuals/slot route with server-owned data.
                 missionPeer.EquipmentUpdatingExpired = true;
             }
@@ -134,16 +141,27 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             agentBuildData.BodyProperties(GetBodyProperties(missionPeer, missionPeer.Culture));
             agentBuildData.Age((int)agentBuildData.AgentBodyProperties.Age);
             agentBuildData.Team(missionPeer.Team); // Set team again, otherwise might break in duel / teamswitch etc.
-            // Keep native class/perk gear for ordinary spawns. An AI recovery
+            // Keep native class/perk gear for ordinary spawns. A series recovery
             // owns its saved banner and equipment after the country default.
             AdimiToolsDuelAppearance.ApplyToBuild(agentBuildData, missionPeer.Culture);
             aiArena?.ConfigureRoundRespawn(missionPeer, agentBuildData);
+            teamBattle?.ConfigureRoundRespawn(missionPeer, agentBuildData);
             bool hasMount = !agentBuildData.AgentOverridenSpawnEquipment[EquipmentIndex.Horse].IsEmpty;
 
             MatrixFrame? getSpawnFrame;
             MatrixFrame? aiRoundRespawn = aiArena?.GetRoundRespawnFrame(missionPeer);
+            MatrixFrame? teamRoundRespawn = teamBattle?.GetRoundRespawnFrame(missionPeer);
             bool regularCompletionSpawn = aiArena?.UsesRegularCompletionSpawn(missionPeer) == true;
-            if (aiRoundRespawn.HasValue)
+            if (teamRoundRespawn.HasValue)
+            {
+                getSpawnFrame = teamRoundRespawn.Value;
+            }
+            else if (hasPendingTeamRespawn)
+            {
+                // Never fall back to an ordinary spawn outside a locked arena.
+                continue;
+            }
+            else if (aiRoundRespawn.HasValue)
             {
                 getSpawnFrame = aiRoundRespawn.Value;
             }
@@ -175,7 +193,7 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
 
             MatrixFrame spawnFrame = (MatrixFrame)getSpawnFrame;
 
-            if (spawnFrame.IsIdentity && !aiRoundRespawn.HasValue)
+            if (spawnFrame.IsIdentity && !aiRoundRespawn.HasValue && !teamRoundRespawn.HasValue)
             {
                 AdimiToolsConsoleLog.Log($"Trying to spawn case spawnFrame.IsIdentity {missionPeer.Name}");
                 continue;
@@ -206,6 +224,7 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             missionPeer.HasSpawnedAgentVisuals = false;
             MPPerkObject.GetPerkHandler(missionPeer)?.OnEvent(MPPerkCondition.PerkEventFlags.SpawnEnd);
             aiArena?.CompleteRoundRespawn(missionPeer, agent);
+            teamBattle?.CompleteRoundRespawn(missionPeer, agent);
         }
 
         // base.OnTick(dt);
@@ -221,7 +240,13 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             }
 
             MissionPeer missionPeer = networkPeer.GetComponent<MissionPeer>();
-            if (!(missionPeer.Representative is DuelMissionRepresentative) || !networkPeer.IsSynchronized || missionPeer.ControlledAgent != null || missionPeer.HasSpawnedAgentVisuals || missionPeer.Team == null || missionPeer.Team == Mission.SpectatorTeam || !missionPeer.TeamInitialPerkInfoReady || missionPeer.Culture == null || !missionPeer.SpawnTimer.Check(Mission.Current.CurrentTime))
+            AdimiToolsTeamBattleBehavior? teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
+            if (missionPeer != null && teamBattle?.ShouldDelayRespawn(missionPeer) == true)
+            {
+                continue;
+            }
+
+            if (missionPeer == null || !(missionPeer.Representative is DuelMissionRepresentative) || !networkPeer.IsSynchronized || missionPeer.ControlledAgent != null || missionPeer.HasSpawnedAgentVisuals || missionPeer.Team == null || missionPeer.Team == Mission.SpectatorTeam || !missionPeer.TeamInitialPerkInfoReady || missionPeer.Culture == null || !missionPeer.SpawnTimer.Check(Mission.Current.CurrentTime))
             {
                 continue;
             }
@@ -259,11 +284,17 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             AdimiToolsDuelAppearance.ApplyToBuild(agentBuildData, missionPeer.Culture);
             AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
             bool hasPendingAiRespawn = aiArena?.HasPendingAiRespawn(missionPeer) == true;
+            bool hasPendingTeamRespawn = teamBattle?.HasPendingRoundRespawn(missionPeer) == true;
             if (hasPendingAiRespawn)
             {
                 // The original client must receive the same saved equipment
                 // in its visuals packet as the server's later real spawn.
                 aiArena!.ConfigureRoundRespawn(missionPeer, agentBuildData);
+            }
+
+            if (hasPendingTeamRespawn)
+            {
+                teamBattle!.ConfigureRoundRespawn(missionPeer, agentBuildData);
             }
 
             if (!_buildAgentData.TryAdd(networkPeer.VirtualPlayer.Id, agentBuildData))
@@ -277,7 +308,7 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
                 missionPeer.EquipmentUpdatingExpired = false;
             }
 
-            HandleDuelAgentVisualSpawning(networkPeer, agentBuildData, useCosmetics: !hasPendingAiRespawn);
+            HandleDuelAgentVisualSpawning(networkPeer, agentBuildData, useCosmetics: !hasPendingAiRespawn && !hasPendingTeamRespawn);
         }
     }
 
