@@ -61,6 +61,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         public Team? TeamA { get; set; }
         public Team? TeamB { get; set; }
         public AdimiToolsTeamBattleSeries? Series { get; set; }
+        public bool NormalCompletion { get; set; }
         public double? NextRoundAt { get; set; }
         public double RespawnDeadline { get; set; }
         public double NextRoundCleanupAt { get; set; }
@@ -295,6 +296,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
                 if (arena.Readiness.Phase != AdimiToolsTeamBattlePhase.Ending)
                 {
+                    arena.NormalCompletion = false;
                     arena.Readiness.End();
                     arena.EndedAt = now - 3d;
                 }
@@ -365,14 +367,14 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
     }
 
-    private static void Notify(MissionPeer peer, string message)
+    private static void Notify(MissionPeer peer, string message, bool playSound = false)
     {
         var network = peer.GetNetworkPeer();
         if (network?.IsConnectionActive == true)
         {
             try
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(network, message);
+                AdimiToolsNotifier.ServerSendAiStatusToPlayer(network, message, playSound);
             }
             catch (Exception exception)
             {
@@ -381,11 +383,11 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
     }
 
-    private static void Announce(Arena arena, string message)
+    private static void Announce(Arena arena, string message, bool playSound = false)
     {
         foreach (Member member in arena.Members.Values)
         {
-            Notify(member.Peer, message);
+            Notify(member.Peer, message, playSound);
         }
     }
 
@@ -451,6 +453,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
 
         arena.Readiness.Reset();
+        arena.NormalCompletion = false;
         arena.Candidates.Clear();
         arena.LastNotice = string.Empty;
     }
@@ -589,9 +592,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         };
         if (notice != arena.LastNotice)
         {
+            bool playCountdownSound = !ready && arena.Readiness.Phase == AdimiToolsTeamBattlePhase.CountingDown;
             foreach (Agent agent in a.Concat(b))
             {
-                Notify(agent.MissionPeer!, notice);
+                Notify(agent.MissionPeer!, notice, playCountdownSound);
             }
 
             arena.LastNotice = notice;
@@ -602,6 +606,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             return;
         }
 
+        arena.NormalCompletion = false;
         arena.Readiness.Lock();
         foreach (Agent agent in a.Concat(b))
         {
@@ -611,7 +616,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 Peer = peer, Agent = agent, OriginalTeam = peer.Team!, SideA = a.Contains(agent),
                 Mount = IsLiving(agent.MountAgent) ? agent.MountAgent : null,
                 MountTeam = IsLiving(agent.MountAgent) ? agent.MountAgent!.Team : null,
-                Character = new AgentBuildData(agent.Character).BodyProperties(agent.BodyPropertiesValue),
+                Character = new AgentBuildData(agent.Character).BodyProperties(agent.BodyPropertiesValue)
+                    .IsFemale(agent.IsFemale).Monster(agent.Monster),
                 Equipment = SnapshotEquipment(agent),
                 Banner = AdimiToolsDuelAppearance.CreateBanner(peer.Culture),
                 MountKey = IsLiving(agent.MountAgent) ? agent.MountAgent!.HorseCreationKey : null,
@@ -631,7 +637,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.Series = new AdimiToolsTeamBattleSeries(AdimiToolsDuelModes.GetTeamLimit(selectedLimits));
         bool commonMode = selectedLimits.All(limit => AdimiToolsDuelModes.IsValidLimit(limit) && limit == selectedLimits[0]);
         string modeNotice = commonMode ? $"名单已锁定，所有参战者共同选择：{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}。"
-            : "参战者赛制设置不一致或无效，本场按一局定胜负。";
+            : "参战者赛制设置不一致或无效，本场按1局定胜负。";
         Announce(arena, modeNotice);
 
         if (!ClearBystanders(arena) || !AdimiToolsAiArenaCleanup.TryClear(Mission, arena.Area))
@@ -715,7 +721,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         bool complete = arena.Series.RecordRound(sideAWon);
         if (complete)
         {
-            End(arena, $"组队对战结束：{(arena.Series.WinnerSideA == true ? "A" : "B")} 队获胜，比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。", now);
+            End(arena, $"组队对战结束：{(arena.Series.WinnerSideA == true ? "A" : "B")} 队获胜，比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。", now, normalCompletion: true);
             return;
         }
 
@@ -788,7 +794,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         if (!arena.NextRoundAt.HasValue)
         {
             arena.NextRoundAt = now + 3d;
-            Announce(arena, $"当前比分 {arena.Series!.SideAWins}:{arena.Series.SideBWins}，双方准备完成，下一局 3 秒后开始。");
+            Announce(arena, $"当前比分 {arena.Series!.SideAWins}:{arena.Series.SideBWins}，双方准备完成，下一局 3 秒后开始。", playSound: true);
             return;
         }
 
@@ -1003,8 +1009,9 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         return equipment;
     }
 
-    private void End(Arena arena, string message, double now, bool immediately = false)
+    private void End(Arena arena, string message, double now, bool immediately = false, bool normalCompletion = false)
     {
+        arena.NormalCompletion = normalCompletion;
         arena.Readiness.End();
         arena.EndedAt = immediately ? now - 3d : now;
         Announce(arena, message);
@@ -1079,6 +1086,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             return;
         }
 
+        QueueCompletedInfantryRespawns(arena);
+        arena.NormalCompletion = false;
         arena.Members.Clear();
         arena.GlowsHidden = false;
         arena.Glows.Update(false, now);
@@ -1097,6 +1106,41 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.LastNotice = string.Empty;
         arena.SharedLoweringStarted = false;
         arena.Shared?.Release(arena);
+    }
+
+    private void QueueCompletedInfantryRespawns(Arena arena)
+    {
+        if (!arena.NormalCompletion)
+        {
+            return;
+        }
+
+        var aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
+        foreach (Member member in arena.Members.Values)
+        {
+            // Only saved class/equipment data is read: the final corpse may
+            // already have lost its native pointer during delayed cleanup.
+            if (member.Withdrawn || IsLiving(member.Agent) || IsLiving(member.Peer.ControlledAgent)
+                || member.Character.AgentCharacter.DefaultFormationClass is not (FormationClass.Infantry or FormationClass.HeavyInfantry))
+            {
+                continue;
+            }
+
+            NetworkCommunicator? network = member.Peer.GetNetworkPeer();
+            if (network?.IsConnectionActive != true || !network.IsSynchronized
+                || !ReferenceEquals(member.Peer.Team, member.OriginalTeam))
+            {
+                continue;
+            }
+
+            if (aiArena?.QueueCompletedInfantryRespawn(member.Peer, member.Character, member.Equipment, member.Banner,
+                member.OriginalTeam, member.HealthLimit, member.BaseHealthLimit) != true)
+            {
+                // A disconnected/changed peer or rejected saved data must not
+                // hold the arena closed. The queue preserves existing tickets.
+                AdimiToolsConsoleLog.Log($"Completed team infantry respawn was not queued for {member.Peer.Peer.Id}.");
+            }
+        }
     }
 
     private bool ClearBystanders(Arena arena)
@@ -1570,6 +1614,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 }
             }
 
+            arena.NormalCompletion = false;
             arena.Members.Clear();
             arena.Candidates.Clear();
             arena.Series = null;

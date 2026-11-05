@@ -37,9 +37,9 @@ internal static class AdimiToolsDuelModes
     {
         return limit switch
         {
-            1 => "一局定胜负",
-            2 => "三局两胜",
-            3 => "五局三胜",
+            1 => "1局定胜负",
+            2 => "3局2胜",
+            3 => "5局3胜",
             _ => "未知赛制",
         };
     }

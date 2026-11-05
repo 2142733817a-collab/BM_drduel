@@ -52,6 +52,31 @@ public class AdimiToolsNotifier
         }
     }
 
+    public static void ServerSendAiStatusToPlayer(NetworkCommunicator targetPlayer, string message, bool playSound = true)
+    {
+        if (targetPlayer.IsServerPeer || !targetPlayer.IsConnectionActive || !targetPlayer.IsSynchronized)
+        {
+            return;
+        }
+
+        // false keeps the stock purple administrator chat line without adding
+        // a top-centre quick-information banner or its client-side sound.
+        GameNetwork.BeginModuleEventAsServer(targetPlayer);
+        try
+        {
+            GameNetwork.WriteMessage(new ServerAdminMessage(message, false));
+        }
+        finally
+        {
+            GameNetwork.EndModuleEventAsServer();
+        }
+
+        if (playSound)
+        {
+            TryPlayGuidanceSound(targetPlayer);
+        }
+    }
+
     public static void AdminAnnouncement(NetworkCommunicator? networkPeer, string message, bool isBroadcast)
     {
         if (networkPeer == null)

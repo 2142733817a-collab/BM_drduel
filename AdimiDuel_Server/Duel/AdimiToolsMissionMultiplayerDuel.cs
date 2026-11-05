@@ -1128,12 +1128,12 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
         if (requesterNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, $"{requesteePeer.Name} 选择了{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}，你选择了{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}。双方胜制必须相同；可输入 !ft {requesteeConfig.FirstToLimit} 或敲击对应物品切换。");
+            AdimiToolsNotifier.ServerSendAiStatusToPlayer(requesterNetworkPeer, $"【赛制不一致】{requesteePeer.Name}：{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}；你：{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}。请到武器架旁挥砍木桶切换胜制，双方设置一致后再发起挑战。");
         }
 
         if (requesteeNetworkPeer != null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(requesteeNetworkPeer, $"{requesterPeer.Name} 选择了{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}，你选择了{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}。双方胜制必须相同；可输入 !ft {requesterConfig.FirstToLimit} 或敲击对应物品切换。");
+            AdimiToolsNotifier.ServerSendAiStatusToPlayer(requesteeNetworkPeer, $"【赛制不一致】{requesterPeer.Name}：{AdimiToolsDuelModes.GetModeName(requesterConfig.FirstToLimit)}；你：{AdimiToolsDuelModes.GetModeName(requesteeConfig.FirstToLimit)}。请到武器架旁挥砍木桶切换胜制，双方设置一致后再发起挑战。");
         }
 
         return false;
@@ -1523,28 +1523,22 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                     break;
                 }
 
-                int maxHp = 1;
                 // Yes, we replace the picked up item immediately, otherwise sometimes invisible items occure. Thanks TaleWorlds!
+                // Native pickup has already selected/merged the ammunition slot.
+                // Re-equipping the wielded slot here would replace the bow with ammo.
+                bool isAmmunition = spawnedItem.ItemObject.ItemType is ItemObject.ItemTypeEnum.Arrows or ItemObject.ItemTypeEnum.Bolts;
                 HandIndex targetHandIndex = spawnedItem.ItemObject.ItemType == ItemObject.ItemTypeEnum.Shield ? HandIndex.OffHand : HandIndex.MainHand;
                 EquipmentIndex wieldedItemIndex = targetHandIndex == HandIndex.MainHand
                     ? agent.GetPrimaryWieldedItemIndex()
                     : agent.GetOffhandWieldedItemIndex();
-                if (wieldedItemIndex != EquipmentIndex.None)
+                if (!isAmmunition && wieldedItemIndex != EquipmentIndex.None)
                 {
-                    if (spawnedItem.ItemObject.Weapons != null && spawnedItem.ItemObject.ItemType == ItemObject.ItemTypeEnum.Shield)
-                    {
-                        foreach (WeaponComponentData weapon in spawnedItem.ItemObject.Weapons)
-                        {
-                            maxHp = weapon.MaxDataValue;
-                        }
-                    }
-
                     // Yes, there are tons of simpler approaches, unfortunately there is a bug with Bannerlord atm which leads to invisible weapons for some players occosionally.
                     // This approach eliminates this issue the most of the times. I know it makes no sense.
                     Banner? shieldBanner = spawnedItem.ItemObject.ItemType == ItemObject.ItemTypeEnum.Shield
                         ? AdimiToolsDuelAppearance.CreateBanner(agent.MissionPeer?.Culture)
                         : null;
-                    MissionWeapon missionWeapon = new(spawnedItem.ItemObject, null, shieldBanner, (short)(spawnedItem.ItemObject.ItemType != ItemObject.ItemTypeEnum.Shield ? 1 : maxHp));
+                    MissionWeapon missionWeapon = new(spawnedItem.ItemObject, null, shieldBanner);
                     agent.EquipWeaponWithNewEntity(wieldedItemIndex, ref missionWeapon);
                     // agent.WieldNextWeapon(HandIndex.MainHand, WeaponWieldActionType.InstantAfterPickUp);
                     agent.TryToWieldWeaponInSlot(wieldedItemIndex, WeaponWieldActionType.InstantAfterPickUp, false);
@@ -1689,17 +1683,21 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             }
         }
 
-        int maxHp = 1;
-        if (itemObject.Weapons != null && itemObject.ItemType == ItemObject.ItemTypeEnum.Shield)
+        // The stock constructor fills consumables to their stack capacity and
+        // shields to their durability. A literal data value of 1 made single arrows.
+        MissionWeapon missionWeapon = new(itemObject, null, null);
+        bool isAmmunition = itemObject.ItemType is ItemObject.ItemTypeEnum.Arrows or ItemObject.ItemTypeEnum.Bolts;
+        Mission.WeaponSpawnFlags flags = Mission.WeaponSpawnFlags.WithStaticPhysics;
+        if (isAmmunition)
         {
-            foreach (WeaponComponentData weapon in itemObject.Weapons)
-            {
-                maxHp = weapon.MaxDataValue;
-            }
+            flags |= Mission.WeaponSpawnFlags.WithHolster;
+        }
+        else
+        {
+            flags |= Mission.WeaponSpawnFlags.WithoutHolster;
         }
 
-        MissionWeapon missionWeapon = new(itemObject, null, null, (short)(itemObject.ItemType != ItemObject.ItemTypeEnum.Shield ? 1 : maxHp));
-        GameEntity placedEntity = Mission.Current.SpawnWeaponWithNewEntityAux(missionWeapon, Mission.WeaponSpawnFlags.WithStaticPhysics | Mission.WeaponSpawnFlags.WithoutHolster, spawnFrame, -1, missionObject, lifeTime);
+        GameEntity placedEntity = Mission.Current.SpawnWeaponWithNewEntityAux(missionWeapon, flags, spawnFrame, -1, missionObject, lifeTime);
         _ = new ItemSpawns(itemObject, placedEntity.GetFirstScriptOfType<SpawnedItemEntity>(), frame, parent, respawn);
     }
 }

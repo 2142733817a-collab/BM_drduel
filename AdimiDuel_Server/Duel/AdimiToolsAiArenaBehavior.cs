@@ -96,6 +96,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         public MatrixFrame Frame { get; init; }
         public bool UseRegularSpawn { get; init; }
+        public bool RestoreAppearance { get; init; }
         public AgentBuildData Character { get; init; } = null!;
         public Equipment Equipment { get; init; } = null!;
         public Banner? Banner { get; init; }
@@ -186,6 +187,50 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         return GetCompletionRespawn(peer)?.UseRegularSpawn == true;
     }
 
+    public bool QueueCompletedInfantryRespawn(MissionPeer peer, AgentBuildData character, Equipment equipment,
+        Banner? banner, Team originalTeam, float healthLimit, float baseHealthLimit)
+    {
+        if (!GameNetwork.IsServer || _ending || _sceneClearing || peer == null || character == null
+            || equipment == null || originalTeam == null || ReferenceEquals(originalTeam, Mission.SpectatorTeam)
+            || !float.IsFinite(healthLimit) || healthLimit <= 0f || !float.IsFinite(baseHealthLimit) || baseHealthLimit <= 0f
+            || !ReferenceEquals(peer.Team, originalTeam)
+            || character.AgentCharacter is not BasicCharacterObject savedCharacter
+            || savedCharacter.DefaultFormationClass is not (FormationClass.Infantry or FormationClass.HeavyInfantry))
+        {
+            return false;
+        }
+
+        NetworkCommunicator? networkPeer = peer.GetNetworkPeer();
+        if (networkPeer == null || networkPeer.IsServerPeer || !networkPeer.IsConnectionActive || !networkPeer.IsSynchronized
+            || IsLivingAgent(peer.ControlledAgent))
+        {
+            return false;
+        }
+
+        if (GetCompletionRespawn(peer) != null)
+        {
+            // Cleanup can retry. A valid ticket is already queued successfully;
+            // never replace it with a later, damaged or different snapshot.
+            return true;
+        }
+
+        var savedBuild = new AgentBuildData(savedCharacter);
+        ApplyCompletionAppearance(savedBuild, character);
+        _completionRespawns[peer] = new CompletionRespawn
+        {
+            UseRegularSpawn = true,
+            RestoreAppearance = true,
+            Character = savedBuild,
+            Equipment = equipment.Clone(),
+            Banner = banner == null ? null : new Banner(banner),
+            MountKey = null,
+            Team = originalTeam,
+            HealthLimit = healthLimit,
+            BaseHealthLimit = baseHealthLimit,
+        };
+        return true;
+    }
+
     public bool ShouldDelayRespawn(MissionPeer peer)
     {
         Arena? arena = FindRespawningArena(peer);
@@ -198,6 +243,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         if (completed != null)
         {
             ConfigureSavedRespawn(buildData, completed.Character, completed.Equipment, completed.MountKey, completed.Banner);
+            if (completed.RestoreAppearance)
+            {
+                ApplyCompletionAppearance(buildData, completed.Character);
+            }
+
             completed.Configured = true;
             return;
         }
@@ -385,7 +435,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.OwnerAgent = agent;
                 arena.OriginalTeam = peer.Team;
                 arena.Equipment = SnapshotEquipment(agent);
-                arena.RegularRespawnEquipment = SnapshotInitialEquipment(peer, agent);
+                // Infantry keeps the loadout it brought into this challenge,
+                // including a shield that may later break. Other roles retain
+                // their class/perk new-life kit. Decide while the actor is alive.
+                arena.RegularRespawnEquipment = agent.Character.DefaultFormationClass is FormationClass.Infantry or FormationClass.HeavyInfantry
+                    ? arena.Equipment.Clone()
+                    : SnapshotInitialEquipment(peer, agent);
                 arena.Banner = AdimiToolsDuelAppearance.CreateBanner(peer.Culture);
                 arena.MountKey = IsLivingAgent(agent.MountAgent) ? agent.MountAgent!.HorseCreationKey : null;
                 arena.OwnerRespawnFrame = arena.Spawn.GetGlobalFrame();
@@ -696,6 +751,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         base.OnEndMission();
     }
 
+    private static void ApplyCompletionAppearance(AgentBuildData target, AgentBuildData saved)
+    {
+        if (saved.BodyPropertiesOverriden)
+        {
+            target.BodyProperties(saved.AgentBodyProperties);
+        }
+
+        if (saved.GenderOverriden)
+        {
+            target.IsFemale(saved.AgentIsFemale);
+        }
+
+        if (saved.AgeOverriden)
+        {
+            target.Age(saved.AgentAge);
+        }
+        else if (saved.BodyPropertiesOverriden)
+        {
+            target.Age((int)saved.AgentBodyProperties.Age);
+        }
+
+        if (saved.AgentMonster != null)
+        {
+            target.Monster(saved.AgentMonster);
+        }
+    }
+
     private static void ConfigureSavedRespawn(AgentBuildData buildData, AgentBuildData character, Equipment equipment, string? mountKey, Banner? banner)
     {
         buildData.Character(character.AgentCharacter)
@@ -715,9 +797,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         NetworkCommunicator? networkPeer = peer.GetNetworkPeer();
         if (networkPeer != null && networkPeer.IsConnectionActive)
         {
-            // Admin broadcasts enter the client's timed quick-information
-            // queue. Repeated summon hits must reach the ordinary log now.
-            AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer, message);
+            // Non-broadcast admin messages color the chat log without entering
+            // the client's timed quick-information queue. Audio is targeted separately.
+            AdimiToolsNotifier.ServerSendAiStatusToPlayer(networkPeer, message);
         }
     }
 

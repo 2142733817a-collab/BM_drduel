@@ -3,6 +3,13 @@ namespace AdimiDuel_Server.Duel;
 internal static class AdimiToolsCultureSelectionTags
 {
     public const string Prefix = "adimi_culture_";
+    public const string CycleId = "cycle";
+    public const string CycleTag = Prefix + CycleId;
+
+    public static IReadOnlyList<string> CycleCultureIds { get; } = Array.AsReadOnly(new[]
+    {
+        "empire", "vlandia", "sturgia", "battania", "khuzait", "aserai",
+    });
 
     public static bool TryGetCultureId(IEnumerable<string> tags, out string cultureId)
     {

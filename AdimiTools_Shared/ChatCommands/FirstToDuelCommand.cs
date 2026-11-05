@@ -9,7 +9,7 @@ internal class FirstToDuelCommand : ChatCommand
     {
         Name = "ft";
         Alias = new string[] { "firstto" };
-        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1/2/3] 设置目标胜场：1=一局定胜负，2=三局两胜，3=五局三胜。";
+        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1/2/3] 设置目标胜场：1=1局定胜负，2=3局2胜，3=5局3胜。";
         Overloads = new CommandOverload[]
         {
             new(new[] { ChatCommandParameterType.Int32 }, Execute),
@@ -34,7 +34,7 @@ internal class FirstToDuelCommand : ChatCommand
         if (!AdimiDuel_Server.Duel.AdimiToolsDuelModes.IsValidLimit(input))
         {
             AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "请输入 !ft 1、!ft 2 或 !ft 3，数字表示先赢多少局。");
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "1=一局定胜负，2=三局两胜，3=五局三胜。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "1=1局定胜负，2=3局2胜，3=5局3胜。");
             return;
         }
 

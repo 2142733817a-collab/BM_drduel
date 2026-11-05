@@ -88,8 +88,14 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
     public void OnTriggerHit(string cultureId, Agent agent)
     {
         if (!CanReceiveHit(agent) || _duelMode == null || _lobby == null
-            || !agent.IsHuman || !agent.IsActive() || !(agent.Health > 0f) || agent.IsFadingOut()
-            || !_cultures.TryGetValue(cultureId, out BasicCultureObject? culture))
+            || !agent.IsHuman || !agent.IsActive() || !(agent.Health > 0f) || agent.IsFadingOut())
+        {
+            return;
+        }
+
+        bool cycle = cultureId == AdimiToolsCultureSelectionTags.CycleId;
+        BasicCultureObject? culture = null;
+        if (!cycle && !_cultures.TryGetValue(cultureId, out culture))
         {
             return;
         }
@@ -119,8 +125,32 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
             return;
         }
 
-        _pending[peer] = new PendingSwitch(agent, culture, Mission.CurrentTime + 3d);
-        Notify(network, $"已选择{culture.Name}，3 秒后应用；再次敲击国家选择物品可重新选择并计时。");
+        if (cycle)
+        {
+            // All cycle props share this player's pending choice. A second hit
+            // advances from that choice without applying or despawning early.
+            string? selectedId = _pending.TryGetValue(peer, out PendingSwitch? pending)
+                && ReferenceEquals(pending.Agent, agent)
+                ? pending.Culture.StringId : peer.Culture?.StringId;
+            string[] choices = AdimiToolsCultureSelectionTags.CycleCultureIds.Where(_cultures.ContainsKey).ToArray();
+            if (choices.Length == 0)
+            {
+                return;
+            }
+
+            int currentIndex = Array.IndexOf(choices, selectedId);
+            culture = _cultures[choices[(currentIndex + 1) % choices.Length]];
+        }
+
+        _pending[peer] = new PendingSwitch(agent, culture!, Mission.CurrentTime + 3d);
+        if (cycle)
+        {
+            AdimiToolsNotifier.ServerSendAiStatusToPlayer(network, $"【阵营切换】3 秒后切换至{culture!.Name}；继续挥砍可选择下一国家。");
+        }
+        else
+        {
+            Notify(network, $"已选择{culture!.Name}，3 秒后应用；再次敲击国家选择物品可重新选择并计时。");
+        }
     }
 
     public override void OnClearScene()
@@ -221,7 +251,9 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         foreach (var entity in Mission.Scene.FindEntitiesWithTagExpression("adimi_culture_.*"))
         {
             if (!AdimiToolsCultureSelectionTags.TryGetCultureId(entity.Tags, out string cultureId)
-                || !_cultures.ContainsKey(cultureId)
+                || (cultureId == AdimiToolsCultureSelectionTags.CycleId
+                    ? !AdimiToolsCultureSelectionTags.CycleCultureIds.Any(_cultures.ContainsKey)
+                    : !_cultures.ContainsKey(cultureId))
                 || entity.Tags.Any(tag => tag.StartsWith("adimi_", StringComparison.Ordinal)
                     && !tag.StartsWith(AdimiToolsCultureSelectionTags.Prefix, StringComparison.Ordinal))
                 || entity.Tags.Any(tag => tag is "teleport_door" or "teleport_target"
