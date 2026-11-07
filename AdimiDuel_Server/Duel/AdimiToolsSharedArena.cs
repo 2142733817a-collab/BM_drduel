@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using TaleWorlds.Engine;
+using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
 
 namespace AdimiDuel_Server.Duel;
@@ -21,25 +22,60 @@ internal sealed class AdimiToolsSharedArena
         public Action<bool, bool> Move { get; init; } = null!;
         public Action<double> Tick { get; init; } = null!;
         public Func<bool, bool> IsAtTarget { get; init; } = null!;
+        public Func<bool>? IsAvailableForDuel { get; init; }
     }
 
     private static readonly ConditionalWeakTable<Mission, MissionAreas> Missions = new();
     private readonly List<Boundary> _boundaries = new();
+    private readonly VolumeBox _area;
     private object? _owner;
 
+    private AdimiToolsSharedArena(VolumeBox area) => _area = area;
+
     public bool HasAiController => _boundaries.Any(boundary => boundary.IsAi);
+    public GameEntity? DuelSpawn { get; private set; }
+
+    public static AdimiToolsSharedArena? FindFreeDuelArena(Mission mission, Vec3 first, Vec3 second)
+    {
+        if (!Missions.TryGetValue(mission, out MissionAreas? state))
+        {
+            return null;
+        }
+
+        AdimiToolsSharedArena? match = null;
+        foreach (var (box, arena) in state.Areas)
+        {
+            if (arena._owner != null || !arena._boundaries.Any(boundary => boundary.Roots.Length != 0)
+                || !box.IsPointIn(first) || !box.IsPointIn(second)
+                || !arena._boundaries.All(boundary => boundary.IsAvailableForDuel?.Invoke() == true))
+            {
+                continue;
+            }
+
+            if (match != null)
+            {
+                return null;
+            }
+
+            match = arena;
+        }
+
+        return match;
+    }
 
     public static AdimiToolsSharedArena For(Mission mission, VolumeBox area)
     {
         MissionAreas state = Missions.GetValue(mission, _ => new MissionAreas());
         if (!state.Areas.TryGetValue(area, out AdimiToolsSharedArena? shared))
         {
-            shared = new AdimiToolsSharedArena();
+            shared = new AdimiToolsSharedArena(area);
             state.Areas.Add(area, shared);
         }
 
         return shared;
     }
+
+    public bool ContainsPoint(Vec3 point) => _area.IsPointIn(point);
 
     public bool TryAcquire(object owner)
     {
@@ -66,7 +102,8 @@ internal sealed class AdimiToolsSharedArena
     }
 
     public void RegisterBoundary(object controller, bool isAi, IEnumerable<GameEntity> roots,
-        Action<bool, bool> move, Action<double> tick, Func<bool, bool> isAtTarget)
+        Action<bool, bool> move, Action<double> tick, Func<bool, bool> isAtTarget,
+        Func<bool>? isAvailableForDuel = null, GameEntity? duelSpawn = null)
     {
         if (_boundaries.Any(boundary => ReferenceEquals(boundary.Controller, controller) || (isAi && boundary.IsAi)))
         {
@@ -93,7 +130,12 @@ internal sealed class AdimiToolsSharedArena
         {
             Controller = controller, IsAi = isAi, Roots = entities,
             Move = move, Tick = tick, IsAtTarget = isAtTarget,
+            IsAvailableForDuel = isAvailableForDuel,
         });
+        if (isAi)
+        {
+            DuelSpawn = duelSpawn;
+        }
     }
 
     public bool IsAiBoundary(GameEntity entity)

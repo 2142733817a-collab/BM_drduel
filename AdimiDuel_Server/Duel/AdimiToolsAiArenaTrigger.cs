@@ -11,12 +11,17 @@ internal sealed class AdimiToolsAiArenaTrigger : MissionObject
     private AdimiToolsAiArenaBehavior? _arenaBehavior;
     private int _groupId;
     private int _difficulty = AdimiToolsAiArenaDifficulty.Simple;
+    private bool _spearInfantry;
+    private AdimiToolsAiArenaKind _rangedKind;
 
-    public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId, int difficulty = AdimiToolsAiArenaDifficulty.Simple)
+    public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId, int difficulty = AdimiToolsAiArenaDifficulty.Simple, bool spearInfantry = false,
+        AdimiToolsAiArenaKind rangedKind = AdimiToolsAiArenaKind.Original)
     {
         _arenaBehavior = arenaBehavior;
         _groupId = groupId;
         _difficulty = difficulty;
+        _spearInfantry = spearInfantry;
+        _rangedKind = rangedKind;
     }
 
     public void Bind(AdimiToolsAiArenaBehavior arenaBehavior, int groupId, bool enhanced)
@@ -34,7 +39,7 @@ internal sealed class AdimiToolsAiArenaTrigger : MissionObject
             // must not steal the arena from the player standing at its terminal.
             if (attackerAgent.Position.DistanceSquared(impactPosition) <= 36f)
             {
-                _arenaBehavior?.OnTriggerHit(_groupId, attackerAgent, _difficulty);
+                _arenaBehavior?.OnTriggerHit(_groupId, attackerAgent, _difficulty, _spearInfantry, _rangedKind);
             }
         }
 

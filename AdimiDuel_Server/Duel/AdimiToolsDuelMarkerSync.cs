@@ -28,7 +28,7 @@ internal sealed class AdimiToolsDuelMarkerSync
         _enabled = _arenaIndex >= 0
             && !string.Equals(Environment.GetEnvironmentVariable("ADIMI_DUEL_DISTANCE_MARKERS"), "0", StringComparison.Ordinal);
         AdimiToolsConsoleLog.Log(_enabled
-            ? "Duel distance markers enabled: restore <=50m, hide >55m, interval 0.5s."
+            ? $"Duel distance markers enabled: restore <={AdimiToolsDuelMarkerVisibility<MissionPeer>.RestoreDistance}m, hide >{AdimiToolsDuelMarkerVisibility<MissionPeer>.HideDistance}m, interval {UpdateInterval}s."
             : "Duel distance markers disabled (environment switch or no valid area_flag_N).");
     }
 

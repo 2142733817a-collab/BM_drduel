@@ -9,17 +9,19 @@ namespace AdimiDuel_Server.Duel;
 internal sealed class AdimiToolsArenaGlowGroup
 {
     public const string GlowTag = "adimi_arena_glow";
+    public const string NativeGlowPrefab = "highlight_item_glow_ground";
+    public const string NativePointerGlowPrefab = "highlight_pointer_glow_ground";
 
     private sealed class Entry
     {
         public GameEntity Entity { get; init; } = null!;
         public SynchedMissionObject Synched { get; init; } = null!;
         public string Name { get; init; } = string.Empty;
-        public bool OriginalVisible { get; init; }
         public bool? AppliedVisible { get; set; }
         public double RetryAt { get; set; }
         public double NextLogAt { get; set; }
         public HashSet<AdimiToolsArenaGlowGroup> HiddenOwners { get; } = new();
+        public HashSet<AdimiToolsArenaGlowGroup> RegisteredOwners { get; } = new();
     }
 
     private sealed class SceneState
@@ -57,33 +59,69 @@ internal sealed class AdimiToolsArenaGlowGroup
             return group;
         }
 
+        // The decoration's Native identity determines what it is; the Box
+        // determines which arena owns it. Existing glow tags are ignored.
+        var entities = new List<GameEntity>();
+        scene.GetEntities(ref entities);
         var candidates = new List<(GameEntity root, SynchedMissionObject synched)>();
-        foreach (GameEntity root in scene.FindEntitiesWithTag(GlowTag))
+        foreach (GameEntity root in entities)
         {
             try
             {
-                if (!root.WeakEntity.IsValid || !root.GlobalPosition.IsValid || !volume.IsPointIn(root.GlobalPosition))
+                if (!root.WeakEntity.IsValid
+                    || (!IsNativeGlowName(root.Name) && !IsNativeGlowName(root.GetPrefabName()))
+                    || !root.GlobalPosition.IsValid || !volume.IsPointIn(root.GlobalPosition))
                 {
                     continue;
                 }
 
                 // Bind decorative roots only. Hiding the area, a trigger or a
                 // moving barrier would also hide unrelated children.
-                if (root.GetFirstScriptOfType<VolumeBox>() != null
-                    || root.Tags.Any(tag => tag is "adimi_ai_area" or "adimi_team_area" or "adimi_ai_barrier"
-                        or "adimi_ai_ladder" or "adimi_team_barrier" or "adimi_ai_trigger"
-                        || tag.StartsWith("adimi_ai_trigger_", StringComparison.Ordinal)))
+                if (IsInteractionObject(root))
                 {
-                    throw new InvalidOperationException("The glow tag belongs on an independent decorative root.");
+                    throw new InvalidOperationException("A Native glow must be an independent decorative root, not an arena box or interaction object.");
                 }
 
                 SynchedMissionObject? synched = root.GetFirstScriptOfType<SynchedMissionObject>();
-                if (synched == null || synched.GetType() != typeof(SynchedMissionObject) || synched.Id.Id < 0 || synched.IsDisabled)
+                if (synched != null)
                 {
-                    throw new InvalidOperationException("Pre-attach the original SynchedMissionObject with a valid scene ID; permanently disabled roots are unsupported.");
+                    ValidateSynched(synched);
+                    candidates.Add((root, synched));
+                    continue;
                 }
 
-                candidates.Add((root, synched));
+                // A leaf-mounted layout keeps MissionObject.OnPreInit from
+                // creating variable-rate physics on the beam through its parent.
+                // This changes the native initialization path, not the shader.
+                // Register all controls together so a malformed part cannot
+                // leave a partially controlled effect behind.
+                var children = new List<GameEntity>();
+                root.GetChildrenRecursive(ref children);
+                var parts = new List<(GameEntity root, SynchedMissionObject synched)>();
+                foreach (GameEntity child in children)
+                {
+                    SynchedMissionObject? part = child.GetFirstScriptOfType<SynchedMissionObject>();
+                    if (part == null)
+                    {
+                        continue;
+                    }
+
+                    if (!child.WeakEntity.IsValid || child.ChildCount != 0 || IsInteractionObject(child)
+                        || part.Id.CreatedAtRuntime)
+                    {
+                        throw new InvalidOperationException("Glow part controllers must be decorative scene leaves with no child entities.");
+                    }
+
+                    ValidateSynched(part);
+                    parts.Add((child, part));
+                }
+
+                if (parts.Count == 0)
+                {
+                    throw new InvalidOperationException("Pre-attach the original SynchedMissionObject on the glow root or its effect leaves.");
+                }
+
+                candidates.AddRange(parts);
             }
             catch (Exception exception)
             {
@@ -97,7 +135,7 @@ internal sealed class AdimiToolsArenaGlowGroup
         {
             try
             {
-                // Deduplicate nested marks only when that valid ancestor is
+                // Deduplicate nested decorations only when that valid ancestor is
                 // also inside this Box. Outside parents cannot steal a glow.
                 bool nested = false;
                 for (GameEntity? parent = root.Parent; parent != null; parent = parent.Parent)
@@ -121,14 +159,19 @@ internal sealed class AdimiToolsArenaGlowGroup
                     entry = new Entry
                     {
                         Entity = root, Synched = synched, Name = root.Name,
-                        OriginalVisible = visible, AppliedVisible = visible,
+                        // A scene/native synchronization snapshot is not the
+                        // desired idle state. Confirm the first target even
+                        // when the server currently reports that same flag.
+                        AppliedVisible = null,
                     };
                     state.Entries.Add(synched, entry);
+                    AdimiToolsConsoleLog.Log($"Arena glow '{root.Name}' id={synched.Id.Id}: initial local visibility={visible}; idle visibility will be confirmed explicitly.");
                 }
 
                 if (!group._entries.Contains(entry))
                 {
                     group._entries.Add(entry);
+                    entry.RegisteredOwners.Add(group);
                 }
             }
             catch (Exception exception)
@@ -170,7 +213,7 @@ internal sealed class AdimiToolsArenaGlowGroup
         }
 
         // OnClearScene still has valid static scene objects, while its Agents
-        // are already deleted. Restore these decorative snapshots before
+        // are already deleted. Restore these decorative idle states before
         // releasing them; native mission reset does not guarantee this reset.
         foreach (Entry entry in _entries)
         {
@@ -187,15 +230,37 @@ internal sealed class AdimiToolsArenaGlowGroup
         foreach (Entry entry in _entries)
         {
             entry.HiddenOwners.Remove(this);
+            entry.RegisteredOwners.Remove(this);
+            if (entry.RegisteredOwners.Count == 0)
+            {
+                entry.AppliedVisible = null;
+            }
         }
 
         _forgotten = true;
         _entries.Clear();
     }
 
+    private static bool IsNativeGlowName(string name)
+        => name is NativeGlowPrefab or NativePointerGlowPrefab;
+
+    private static bool IsInteractionObject(GameEntity entity)
+        => entity.GetFirstScriptOfType<VolumeBox>() != null
+            || entity.Tags.Any(tag => tag is "adimi_ai_area" or "adimi_team_area" or "adimi_ai_barrier"
+                or "adimi_ai_ladder" or "adimi_team_barrier" or "adimi_ai_trigger"
+                || tag.StartsWith("adimi_ai_trigger_", StringComparison.Ordinal));
+
+    private static void ValidateSynched(SynchedMissionObject synched)
+    {
+        if (synched.GetType() != typeof(SynchedMissionObject) || synched.Id.Id < 0 || synched.IsDisabled)
+        {
+            throw new InvalidOperationException("Pre-attach the original SynchedMissionObject with a valid scene ID; permanently disabled controls are unsupported.");
+        }
+    }
+
     private static void Apply(Entry entry, double now)
     {
-        bool visible = entry.HiddenOwners.Count == 0 && entry.OriginalVisible;
+        bool visible = entry.HiddenOwners.Count == 0;
         if (entry.AppliedVisible == visible || now < entry.RetryAt)
         {
             return;

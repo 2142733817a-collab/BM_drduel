@@ -11,6 +11,16 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
 
     public override int GetEffectiveSkill(Agent agent, SkillObject skill)
     {
+        if (AdimiToolsAiPerkEffects.Find(agent)?.IsFiann == true && (skill == DefaultSkills.Bow || skill == DefaultSkills.TwoHanded))
+        {
+            return 220;
+        }
+
+        if (agent.Origin is AdimiToolsAiArenaSkillOrigin origin && origin.GetSkillOverride(skill) is int overridden)
+        {
+            return overridden;
+        }
+
         int value = base.GetEffectiveSkill(agent, skill);
         int difficulty = GetDifficulty(agent);
         return difficulty == 3 ? HardSkill : difficulty == 2 ? (int)System.Math.Min((long)value + SkillBonus, int.MaxValue) : value;
@@ -18,13 +28,25 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
 
     public override int GetEffectiveSkillForWeapon(Agent agent, WeaponComponentData weapon)
     {
+        if (AdimiToolsAiPerkEffects.Find(agent)?.IsFiann == true
+            && (weapon.RelevantSkill == DefaultSkills.Bow || weapon.RelevantSkill == DefaultSkills.TwoHanded))
+        {
+            return 220;
+        }
+
+        if (agent.Origin is AdimiToolsAiArenaSkillOrigin origin && origin.GetSkillOverride(weapon.RelevantSkill) is int overridden)
+        {
+            return overridden;
+        }
+
         return GetDifficulty(agent) == 3 ? HardSkill : base.GetEffectiveSkillForWeapon(agent, weapon);
     }
 
     public override void UpdateAgentStats(Agent agent, AgentDrivenProperties properties)
     {
         base.UpdateAgentStats(agent, properties);
-        if (agent.IsHuman && IsEnhanced(agent))
+        AdimiToolsAiPerkEffects? effects = AdimiToolsAiPerkEffects.Find(agent);
+        if (agent.IsHuman && (IsEnhanced(agent) || agent.Origin is AdimiToolsAiArenaSkillOrigin || effects?.IsFiann == true))
         {
             ApplyHumanSkillStats(agent, properties);
         }
@@ -32,6 +54,8 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
         {
             ApplyMountSkillStats(agent, properties);
         }
+
+        effects?.ApplyStats(agent, properties);
     }
 
     private static bool IsEnhanced(Agent? agent)

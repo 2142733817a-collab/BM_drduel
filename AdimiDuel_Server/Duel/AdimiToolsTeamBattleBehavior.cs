@@ -52,6 +52,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         public VolumeBox SideB { get; init; } = null!;
         public VolumeBox Area { get; init; } = null!;
         public AdimiToolsSharedArena? Shared { get; init; }
+        public AdimiToolsSharedArena? DuelBoundary { get; init; }
         public AdimiToolsArenaGlowGroup Glows { get; init; } = null!;
         public bool GlowsHidden { get; set; }
         public List<AdimiToolsTeamBattleBarrier> Barriers { get; init; } = new();
@@ -211,7 +212,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         double now = Mission.CurrentTime;
         foreach (Arena arena in _arenas)
         {
-            if (arena.Shared?.IsOwnedByOther(arena) == true)
+            if (arena.DuelBoundary?.IsOwnedByOther(arena) == true)
             {
                 ResetWaiting(arena);
                 continue;
@@ -346,8 +347,75 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     public override void OnRemoveBehavior()
     {
+        // MissionState finalization removes behaviors after native teams and
+        // the mission have been destroyed. Only discard managed state then;
+        // live, explicit behavior removal must still restore the arena.
+        if (Mission.IsFinalized)
+        {
+            _stopped = true;
+            foreach (Arena arena in _arenas)
+            {
+                arena.Glows.Forget();
+            }
+
+            _arenas.Clear();
+            _duelMode = null;
+            base.OnRemoveBehavior();
+            return;
+        }
+
         Stop();
         base.OnRemoveBehavior();
+    }
+
+    internal bool CanYieldAiReadiness(VolumeBox? area) => !_stopped && _arenas.Any(arena =>
+        ReferenceEquals(arena.Area, area) && !arena.Disabled
+        && arena.Readiness.Phase < AdimiToolsTeamBattlePhase.Preparing && arena.Shared?.Owns(arena) == true);
+
+    internal bool IsPeerReservedForAi(MissionPeer peer, VolumeBox? area) => !_stopped && _arenas.Any(arena =>
+        IsReserved(arena, peer) && (!ReferenceEquals(arena.Area, area)
+            || arena.Disabled || arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing));
+
+    internal void YieldAiReadiness(VolumeBox area)
+    {
+        Arena? arena = _arenas.FirstOrDefault(candidate => ReferenceEquals(candidate.Area, area));
+        if (arena != null && CanYieldAiReadiness(area))
+        {
+            ResetWaiting(arena);
+            arena.Shared!.Release(arena);
+        }
+    }
+
+    internal IReadOnlyList<MissionPeer> FindAiParticipants(VolumeBox area, MissionPeer owner)
+    {
+        Arena? arena = _arenas.FirstOrDefault(candidate => ReferenceEquals(candidate.Area, area));
+        if (_stopped || _duelMode == null || arena == null || arena.Disabled
+            || arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing || arena.DuelBoundary?.IsOwnedByOther(arena) == true)
+        {
+            return Array.Empty<MissionPeer>();
+        }
+
+        var participants = new List<MissionPeer>();
+        foreach (NetworkCommunicator network in GameNetwork.NetworkPeers)
+        {
+            MissionPeer? peer = network.GetComponent<MissionPeer>();
+            Agent? agent = peer?.ControlledAgent;
+            if (peer == null || ReferenceEquals(peer, owner) || !network.IsConnectionActive || !network.IsSynchronized
+                || !IsLiving(agent) || !agent!.IsHuman || peer.Team?.IsAttacker != true || !peer.TeamInitialPerkInfoReady
+                || !ReferenceEquals(agent.MissionPeer, peer) || !ReferenceEquals(agent.Team, peer.Team)
+                || IsBusyElsewhere(peer, arena))
+            {
+                continue;
+            }
+
+            Vec3 point = Ground(agent);
+            if (area.IsPointIn(point) && (arena.SideA.IsPointIn(point) || arena.SideB.IsPointIn(point)))
+            {
+                participants.Add(peer);
+            }
+        }
+
+        return participants;
     }
 
     private static bool IsReserved(Arena arena, MissionPeer peer)
@@ -566,7 +634,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             }
         }
 
+        double? previousCountdownStart = arena.Readiness.StableSince;
         bool ready = arena.Readiness.Observe(a, b, now);
+        bool countdownRestarted = arena.Readiness.Phase == AdimiToolsTeamBattlePhase.CountingDown
+            && previousCountdownStart != arena.Readiness.StableSince;
         arena.Candidates.Clear();
         if (a.Count != 0 && b.Count != 0)
         {
@@ -586,11 +657,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         string notice = arena.Readiness.Phase switch
         {
-            AdimiToolsTeamBattlePhase.Settling => $"A 队 {a.Count} 人 / B 队 {b.Count} 人：名单稳定 3 秒后开始开局倒计时。",
             AdimiToolsTeamBattlePhase.CountingDown => $"A 队 {a.Count} 人 / B 队 {b.Count} 人：{Math.Max(0, (int)Math.Ceiling(arena.Readiness.CountdownEndsAt!.Value - now))} 秒后清场并升起屏障；进出准备区会重新计时。",
             _ => "等待双方进入准备区，每队至少 1 人，人数无需相等。",
         };
-        if (notice != arena.LastNotice)
+        if (notice != arena.LastNotice || countdownRestarted)
         {
             bool playCountdownSound = !ready && arena.Readiness.Phase == AdimiToolsTeamBattlePhase.CountingDown;
             foreach (Agent agent in a.Concat(b))
@@ -705,10 +775,9 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         {
             ResolveRound(arena, a == 0 && b == 0 ? null : a != 0, now);
         }
-        else if (!ClearBystanders(arena))
-        {
-            End(arena, "场地受到其他对局干扰或无法移出无关人员，本场已取消。", now, immediately: true);
-        }
+
+        // Clear the arena during preparation for each round. Once fighting,
+        // keep spectators in place; barriers and damage isolation protect it.
     }
 
     private void ResolveRound(Arena arena, bool? sideAWon, double now)
@@ -1230,11 +1299,16 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     private (Arena? arena, Member? member) FindMember(Agent actor)
     {
-        if (actor.IsMount && IsLiving(actor.RiderAgent))
+        if (actor.IsMount)
         {
             // A horse can be taken from the other team. Its living rider owns
             // the current combat side, ahead of the original mount snapshot.
-            return FindMember(actor.RiderAgent!);
+            Agent? rider = actor.RiderAgent;
+            if ((IsLiving(rider) && ReferenceEquals(rider!.MountAgent, actor))
+                || (AdimiToolsMountSafety.TryGetCurrentRider(Mission, actor, out rider) && rider != null))
+            {
+                return FindMember(rider!);
+            }
         }
 
         foreach (Arena arena in _arenas)
@@ -1280,14 +1354,16 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         foreach (Agent mount in member.ManagedMounts.Concat(member.Mount == null ? Array.Empty<Agent>() : new[] { member.Mount }).Distinct())
         {
-            if (touchAgents && IsLiving(mount) && IsBattleTeam(mount.Team))
+            if (touchAgents && IsLiving(mount) && IsBattleTeam(mount.Team)
+                && AdimiToolsMountSafety.TryGetCurrentRider(Mission, mount, out Agent? rider))
             {
-                Agent? rider = mount.RiderAgent;
-                mount.SetTeam(IsLiving(rider) ? rider!.Team : member.MountTeam ?? member.OriginalTeam, sync: true);
+                mount.SetTeam(rider == null ? member.MountTeam ?? member.OriginalTeam : rider.Team, sync: true);
             }
         }
 
-        if (touchAgents && IsLiving(member.Agent) && IsLiving(member.Agent.MountAgent) && IsBattleTeam(member.Agent.MountAgent!.Team))
+        if (touchAgents && IsLiving(member.Agent) && IsLiving(member.Agent.MountAgent) && IsBattleTeam(member.Agent.MountAgent!.Team)
+            && AdimiToolsMountSafety.TryGetCurrentRider(Mission, member.Agent.MountAgent, out Agent? currentRider)
+            && ReferenceEquals(currentRider, member.Agent))
         {
             member.Agent.MountAgent.SetTeam(member.Agent.Team, sync: true);
         }
@@ -1485,14 +1561,16 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 GameEntity[] roots = assigned[area.Entity].Where(entity => entity.HasTag(AdimiToolsTeamBattlePolicy.Barrier)).ToArray();
                 List<AdimiToolsTeamBattleBarrier> barriers = roots.Select(root => new AdimiToolsTeamBattleBarrier(root)).ToList();
 
+                AdimiToolsSharedArena duelBoundary = AdimiToolsSharedArena.For(Mission, area.Box);
                 var arena = new Arena
                 {
                     Id = area.Id, SideA = sideA, SideB = sideB, Area = area.Box,
                     Shared = area.Shared,
+                    DuelBoundary = duelBoundary,
                     Glows = AdimiToolsArenaGlowGroup.Create(Mission.Scene, area.Entity),
                     Barriers = barriers,
                 };
-                area.Shared?.RegisterBoundary(arena, isAi: false, roots,
+                duelBoundary.RegisterBoundary(arena, isAi: false, roots,
                     (raised, immediately) =>
                     {
                         var failures = new List<Exception>();
@@ -1519,7 +1597,9 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                             throw new AggregateException(failures);
                         }
                     },
-                    raised => barriers.All(barrier => !barrier.IsMoving && barrier.IsRaised == raised && barrier.IsSynchronized));
+                    raised => barriers.All(barrier => !barrier.IsMoving && barrier.IsRaised == raised && barrier.IsSynchronized),
+                    isAvailableForDuel: () => !_stopped && !arena.Disabled && arena.Readiness.Phase == AdimiToolsTeamBattlePhase.Waiting
+                        && barriers.All(barrier => !barrier.IsMoving && !barrier.IsRaised && barrier.IsSynchronized));
                 _arenas.Add(arena);
                 AdimiToolsConsoleLog.Log($"Team battle area {area.Id} ready by spatial boxes: 3s stable + 3s countdown, unequal rosters allowed, barriers={roots.Length}.");
             }
@@ -1599,7 +1679,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                     }
                 }
             }
-            else
+            else if (arena.DuelBoundary?.IsOwnedByOther(arena) != true)
             {
                 foreach (var barrier in arena.Barriers)
                 {

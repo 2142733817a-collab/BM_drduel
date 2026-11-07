@@ -39,7 +39,8 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
                 }
 
                 duelConfig.FirstToLimit = anvilLimit;
-                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"已选择{AdimiToolsDuelModes.GetModeName(anvilLimit)}：先赢 {anvilLimit} 局获胜。一对一双方需一致；队战需全员一致，否则按单局。已开赛胜制保持不变。");
+                AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer,
+                    AdimiToolsDuelGuidanceText.GetModeSelection(AdimiToolsDuelModes.GetModeName(anvilLimit)));
             }
             else
             {

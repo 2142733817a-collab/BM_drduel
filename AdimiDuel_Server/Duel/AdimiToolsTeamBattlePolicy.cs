@@ -36,7 +36,6 @@ internal enum AdimiToolsTeamBattlePhase
 
 internal sealed class AdimiToolsTeamBattleReadiness<T> where T : notnull
 {
-    public const double StableSeconds = 3d;
     public const double CountdownSeconds = 3d;
     private readonly IEqualityComparer<T> _comparer;
     private HashSet<T> _sideA;
@@ -52,7 +51,7 @@ internal sealed class AdimiToolsTeamBattleReadiness<T> where T : notnull
 
     public AdimiToolsTeamBattlePhase Phase { get; private set; }
     public double? StableSince { get; private set; }
-    public double? CountdownEndsAt => StableSince + StableSeconds + CountdownSeconds;
+    public double? CountdownEndsAt => StableSince + CountdownSeconds;
     public IReadOnlyCollection<T> SideA => _sideA;
     public IReadOnlyCollection<T> SideB => _sideB;
 
@@ -79,13 +78,9 @@ internal sealed class AdimiToolsTeamBattleReadiness<T> where T : notnull
         if (changed || !StableSince.HasValue)
         {
             StableSince = now;
-            Phase = AdimiToolsTeamBattlePhase.Settling;
         }
 
-        if (now >= StableSince!.Value + StableSeconds)
-        {
-            Phase = AdimiToolsTeamBattlePhase.CountingDown;
-        }
+        Phase = AdimiToolsTeamBattlePhase.CountingDown;
 
         _ready = now >= CountdownEndsAt!.Value;
         return _ready;

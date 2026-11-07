@@ -11,7 +11,16 @@ namespace AdimiDuel_Server.Duel;
 
 internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
 {
+    private sealed record CapturedMount(Agent Horse, Agent FormerRider, double Deadline)
+    {
+        public bool Released { get; set; }
+    }
+
+    private sealed record InPlaceDuelRespawn(Team Team, MatrixFrame Frame, EquipmentElement Horse, EquipmentElement Harness,
+        CapturedMount CapturedMount);
+
     private readonly Dictionary<PlayerId, AgentBuildData> _buildAgentData;
+    private readonly Dictionary<MissionPeer, InPlaceDuelRespawn> _inPlaceDuelRespawns = new();
 
     public AdimiToolsDuelSpawningBehavior()
     {
@@ -43,8 +52,9 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             AdimiToolsAiArenaBehavior? aiArena = Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>();
             bool hasPendingAiRespawn = missionPeer != null && aiArena?.HasPendingAiRespawn(missionPeer) == true;
             bool hasPendingTeamRespawn = missionPeer != null && teamBattle?.HasPendingRoundRespawn(missionPeer) == true;
+            InPlaceDuelRespawn? inPlaceDuel = missionPeer == null ? null : GetInPlaceDuelRespawn(missionPeer);
             if (missionPeer == null || missionPeer.ControlledAgent != null || !missionPeer.HasSpawnedAgentVisuals
-                || (!hasPendingAiRespawn && !hasPendingTeamRespawn && CanUpdateSpawnEquipment(missionPeer)))
+                || (!hasPendingAiRespawn && !hasPendingTeamRespawn && inPlaceDuel == null && CanUpdateSpawnEquipment(missionPeer)))
             {
                 continue;
             }
@@ -54,7 +64,12 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
                 continue;
             }
 
-            if (hasPendingAiRespawn || hasPendingTeamRespawn)
+            if (inPlaceDuel != null && !TryReleaseCapturedMount(inPlaceDuel.CapturedMount))
+            {
+                continue;
+            }
+
+            if (hasPendingAiRespawn || hasPendingTeamRespawn || inPlaceDuel != null)
             {
                 // Series round replacements and completed AI loss recovery
                 // use the original visuals/slot route with server-owned data.
@@ -146,13 +161,22 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             AdimiToolsDuelAppearance.ApplyToBuild(agentBuildData, missionPeer.Culture);
             aiArena?.ConfigureRoundRespawn(missionPeer, agentBuildData);
             teamBattle?.ConfigureRoundRespawn(missionPeer, agentBuildData);
+            if (inPlaceDuel != null)
+            {
+                ApplyInPlaceDuelMount(agentBuildData, inPlaceDuel);
+            }
+
             bool hasMount = !agentBuildData.AgentOverridenSpawnEquipment[EquipmentIndex.Horse].IsEmpty;
 
             MatrixFrame? getSpawnFrame;
             MatrixFrame? aiRoundRespawn = aiArena?.GetRoundRespawnFrame(missionPeer);
             MatrixFrame? teamRoundRespawn = teamBattle?.GetRoundRespawnFrame(missionPeer);
             bool regularCompletionSpawn = aiArena?.UsesRegularCompletionSpawn(missionPeer) == true;
-            if (teamRoundRespawn.HasValue)
+            if (inPlaceDuel != null)
+            {
+                getSpawnFrame = inPlaceDuel.Frame;
+            }
+            else if (teamRoundRespawn.HasValue)
             {
                 getSpawnFrame = teamRoundRespawn.Value;
             }
@@ -193,7 +217,7 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
 
             MatrixFrame spawnFrame = (MatrixFrame)getSpawnFrame;
 
-            if (spawnFrame.IsIdentity && !aiRoundRespawn.HasValue && !teamRoundRespawn.HasValue)
+            if (spawnFrame.IsIdentity && !aiRoundRespawn.HasValue && !teamRoundRespawn.HasValue && inPlaceDuel == null)
             {
                 AdimiToolsConsoleLog.Log($"Trying to spawn case spawnFrame.IsIdentity {missionPeer.Name}");
                 continue;
@@ -204,6 +228,11 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             agentBuildData.InitialDirection(in value);
 
             Agent agent = Mission.SpawnAgent(agentBuildData, spawnFromAgentVisuals: true);
+            if (inPlaceDuel != null)
+            {
+                _inPlaceDuelRespawns.Remove(missionPeer);
+            }
+
             agent.AddComponent(new MPPerksAgentComponent(agent));
             agent.MountAgent?.UpdateAgentProperties();
             agent.HealthLimit += onSpawnPerkHandler?.GetHitpoints(true) ?? 0f;
@@ -230,6 +259,63 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
         // base.OnTick(dt);
     }
 
+    internal void RequestClassSelection(MissionPeer peer)
+    {
+        // A deliberate country change starts a fresh stock loadout preview.
+        // SpawnAgents still waits for the old agent to disappear and for the
+        // client's initial-perk reply before sending CreateAgentVisuals, which
+        // is the original client's automatic loadout-opening event.
+        _buildAgentData.Remove(peer.GetNetworkPeer().VirtualPlayer.Id);
+        peer.HasSpawnedAgentVisuals = false;
+        peer.EquipmentUpdatingExpired = false;
+        peer.SpawnTimer.Reset(Mission.CurrentTime, 0f);
+    }
+
+    internal bool HasInPlaceDuelRespawn(MissionPeer peer) => GetInPlaceDuelRespawn(peer) != null;
+
+    internal void CancelInPlaceDuelRespawn(MissionPeer peer) => _inPlaceDuelRespawns.Remove(peer);
+
+    internal void QueueCapturedMountReset(Agent winner, MissionPeer loser, Agent horse, MatrixFrame deathFrame)
+    {
+        MissionPeer? winnerPeer = winner.MissionPeer;
+        if (winnerPeer == null || winnerPeer.Team == null || loser.Team == null
+            || winnerPeer.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true }
+            || loser.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true }
+            || _inPlaceDuelRespawns.ContainsKey(winnerPeer) || _inPlaceDuelRespawns.ContainsKey(loser))
+        {
+            return;
+        }
+
+        Equipment horseEquipment = horse.SpawnEquipment;
+        EquipmentElement horseItem = horseEquipment[EquipmentIndex.Horse];
+        MatrixFrame winnerFrame = winner.Frame;
+        winnerFrame.origin = horse.Position;
+        if (horseItem.IsEmpty || !winnerFrame.origin.IsValid || !deathFrame.origin.IsValid)
+        {
+            return;
+        }
+
+        var captured = new CapturedMount(horse, winner, Mission.CurrentTime + 3d);
+        _inPlaceDuelRespawns.Add(winnerPeer, new InPlaceDuelRespawn(winnerPeer.Team, winnerFrame,
+            EquipmentElement.Invalid, EquipmentElement.Invalid, captured));
+        _inPlaceDuelRespawns.Add(loser, new InPlaceDuelRespawn(loser.Team, deathFrame, horseItem,
+            horseEquipment[EquipmentIndex.HorseHarness], captured));
+        try
+        {
+            // Retire the human through the normal removal path. Only the
+            // verified unoccupied horse is faded after the rider is detached.
+            winner.FadeOut(hideInstantly: true, hideMount: false);
+        }
+        catch (Exception exception)
+        {
+            _inPlaceDuelRespawns.Remove(winnerPeer);
+            _inPlaceDuelRespawns.Remove(loser);
+            AdimiToolsConsoleLog.Log($"Captured duel mount reset failed: {exception.Message}");
+        }
+    }
+
+    internal void ClearInPlaceDuelRespawns() => _inPlaceDuelRespawns.Clear();
+
     protected override void SpawnAgents()
     {
         foreach (NetworkCommunicator networkPeer in GameNetwork.NetworkPeers)
@@ -240,13 +326,24 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
             }
 
             MissionPeer missionPeer = networkPeer.GetComponent<MissionPeer>();
+            InPlaceDuelRespawn? inPlaceDuel = missionPeer == null ? null : GetInPlaceDuelRespawn(missionPeer);
             AdimiToolsTeamBattleBehavior? teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
             if (missionPeer != null && teamBattle?.ShouldDelayRespawn(missionPeer) == true)
             {
                 continue;
             }
 
-            if (missionPeer == null || !(missionPeer.Representative is DuelMissionRepresentative) || !networkPeer.IsSynchronized || missionPeer.ControlledAgent != null || missionPeer.HasSpawnedAgentVisuals || missionPeer.Team == null || missionPeer.Team == Mission.SpectatorTeam || !missionPeer.TeamInitialPerkInfoReady || missionPeer.Culture == null || !missionPeer.SpawnTimer.Check(Mission.Current.CurrentTime))
+            if (missionPeer == null || !(missionPeer.Representative is DuelMissionRepresentative) || !networkPeer.IsSynchronized || missionPeer.ControlledAgent != null || missionPeer.HasSpawnedAgentVisuals || missionPeer.Team == null || missionPeer.Team == Mission.SpectatorTeam || !missionPeer.TeamInitialPerkInfoReady || missionPeer.Culture == null || (inPlaceDuel == null && !missionPeer.SpawnTimer.Check(Mission.Current.CurrentTime)))
+            {
+                continue;
+            }
+
+            if (Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.ShouldDelayCoopRespawn(missionPeer) == true)
+            {
+                continue;
+            }
+
+            if (inPlaceDuel != null && !TryReleaseCapturedMount(inPlaceDuel.CapturedMount))
             {
                 continue;
             }
@@ -297,6 +394,11 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
                 teamBattle!.ConfigureRoundRespawn(missionPeer, agentBuildData);
             }
 
+            if (inPlaceDuel != null)
+            {
+                ApplyInPlaceDuelMount(agentBuildData, inPlaceDuel);
+            }
+
             if (!_buildAgentData.TryAdd(networkPeer.VirtualPlayer.Id, agentBuildData))
             {
                 _buildAgentData[networkPeer.VirtualPlayer.Id] = agentBuildData;
@@ -310,6 +412,70 @@ internal class AdimiToolsDuelSpawningBehavior : DuelSpawningBehavior
 
             HandleDuelAgentVisualSpawning(networkPeer, agentBuildData, useCosmetics: !hasPendingAiRespawn && !hasPendingTeamRespawn);
         }
+    }
+
+    private static void ApplyInPlaceDuelMount(AgentBuildData build, InPlaceDuelRespawn reset)
+    {
+        Equipment equipment = build.AgentOverridenSpawnEquipment;
+        equipment[EquipmentIndex.Horse] = reset.Horse;
+        equipment[EquipmentIndex.HorseHarness] = reset.Harness;
+        build.NoHorses(reset.Horse.IsEmpty);
+    }
+
+    private InPlaceDuelRespawn? GetInPlaceDuelRespawn(MissionPeer peer)
+    {
+        if (!_inPlaceDuelRespawns.TryGetValue(peer, out InPlaceDuelRespawn? reset))
+        {
+            return null;
+        }
+
+        if (peer.Team != reset.Team || peer.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true })
+        {
+            _inPlaceDuelRespawns.Remove(peer);
+            return null;
+        }
+
+        return reset;
+    }
+
+    private bool TryReleaseCapturedMount(CapturedMount captured)
+    {
+        if (captured.Released)
+        {
+            return true;
+        }
+
+        try
+        {
+            if (!AdimiToolsMountSafety.IsLiving(Mission, captured.Horse))
+            {
+                captured.Released = true;
+            }
+            else if (AdimiToolsMountSafety.TryGetCurrentRider(Mission, captured.Horse, out Agent? rider)
+                && !ReferenceEquals(rider, captured.FormerRider))
+            {
+                if (rider == null)
+                {
+                    if (captured.Horse.RiderAgent != null
+                        || (Mission.AllAgents.Contains(captured.FormerRider) && captured.FormerRider.State != AgentState.Deleted
+                            && ReferenceEquals(captured.FormerRider.MountAgent, captured.Horse)))
+                    {
+                        return Mission.CurrentTime >= captured.Deadline;
+                    }
+
+                    captured.Horse.FadeOut(hideInstantly: true, hideMount: false);
+                }
+
+                captured.Released = true;
+            }
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"Captured duel mount cleanup failed: {exception.Message}");
+        }
+
+        // An unresolved native riding link must not lock either player out.
+        return captured.Released || Mission.CurrentTime >= captured.Deadline;
     }
 
     private AdimiToolsDuelSpawnClass GetSpawnClass(BasicCharacterObject character)

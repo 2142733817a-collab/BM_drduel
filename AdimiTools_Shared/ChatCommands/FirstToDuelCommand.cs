@@ -9,11 +9,29 @@ internal class FirstToDuelCommand : ChatCommand
     {
         Name = "ft";
         Alias = new string[] { "firstto" };
-        Description = $"输入 {ChatCommandsComponent.CommandPrefix}{Name} [1/2/3] 设置目标胜场：1=1局定胜负，2=3局2胜，3=5局3胜。";
+        Description = "输入 !1、!3.2 或 !5.3 切换赛制。";
         Overloads = new CommandOverload[]
         {
             new(new[] { ChatCommandParameterType.Int32 }, Execute),
         };
+    }
+
+    public bool TryExecuteShortcut(NetworkCommunicator fromPeer, string message)
+    {
+        int limit = message.Trim() switch
+        {
+            "!1" => 1,
+            "!3.2" => 2,
+            "!5.3" => 3,
+            _ => 0,
+        };
+        if (limit == 0 || !CheckRequirements(fromPeer))
+        {
+            return false;
+        }
+
+        Execute(fromPeer, new object[] { limit });
+        return true;
     }
 
     protected override bool CheckRequirements(NetworkCommunicator fromPeer)
@@ -33,8 +51,7 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (!AdimiDuel_Server.Duel.AdimiToolsDuelModes.IsValidLimit(input))
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "请输入 !ft 1、!ft 2 或 !ft 3，数字表示先赢多少局。");
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "1=1局定胜负，2=3局2胜，3=5局3胜。");
+            AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer, AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeUsage());
             return;
         }
 
@@ -53,7 +70,8 @@ internal class FirstToDuelCommand : ChatCommand
         if (PlayersDuelConfig.TryGetValue(missionPeer.Peer.Id, out DuelConfig? duelConfig))
         {
             duelConfig.FirstToLimit = input;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"已选择{AdimiDuel_Server.Duel.AdimiToolsDuelModes.GetModeName(input)}：先赢 {input} 局获胜。一对一双方需一致；队战需全员一致，否则按单局。已开赛胜制保持不变。");
+            AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer,
+                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeSelection(AdimiDuel_Server.Duel.AdimiToolsDuelModes.GetModeName(input)));
         }
         else
         {

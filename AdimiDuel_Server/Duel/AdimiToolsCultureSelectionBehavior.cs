@@ -145,11 +145,11 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         _pending[peer] = new PendingSwitch(agent, culture!, Mission.CurrentTime + 3d);
         if (cycle)
         {
-            AdimiToolsNotifier.ServerSendAiStatusToPlayer(network, $"【阵营切换】3 秒后切换至{culture!.Name}；继续挥砍可选择下一国家。");
+            Notify(network, $"3秒后切换至{GetCultureName(culture!)}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
         }
         else
         {
-            Notify(network, $"已选择{culture!.Name}，3 秒后应用；再次敲击国家选择物品可重新选择并计时。");
+            Notify(network, $"3秒后切换至{GetCultureName(culture!)}。\n再次挥砍可重新选择并计时。", playSound: true);
         }
     }
 
@@ -172,8 +172,22 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         base.OnRemoveBehavior();
     }
 
-    private static void Notify(NetworkCommunicator peer, string message)
-        => AdimiToolsNotifier.ServerSendMessageToPlayer(peer, message);
+    private static void Notify(NetworkCommunicator peer, string message, bool playSound = false)
+        => AdimiToolsNotifier.ServerSendGuidanceToPlayer(peer,
+            $"<span style=\"{AdimiToolsDuelGuidanceText.HighlightStyle}\">【阵营切换】</span>{message}", playSound);
+
+    // Dedicated servers can resolve culture.Name in English regardless of the
+    // recipient's language. Keep the six stock countries Chinese in this log.
+    private static string GetCultureName(BasicCultureObject culture) => culture.StringId switch
+    {
+        "empire" => "帝国",
+        "vlandia" => "瓦兰迪亚",
+        "sturgia" => "斯特吉亚",
+        "battania" => "巴旦尼亚",
+        "khuzait" => "库赛特",
+        "aserai" => "阿塞莱",
+        _ => culture.Name.ToString(),
+    };
 
     private bool IsBusy(MissionPeer peer)
     {
@@ -185,6 +199,12 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
 
     private void Apply(MissionPeer peer, NetworkCommunicator network, BasicCultureObject culture)
     {
+        if (!AdimiToolsCultureClientPalette.ApplyToPlayer(network, culture.StringId))
+        {
+            Notify(network, "选兵配色同步失败，未切换国家，请稍后重试。");
+            return;
+        }
+
         // A free player's last completed PvP may still have a one-use weapon
         // restoration. A deliberate class/culture selection starts a new kit.
         if (AdimiToolsMissionMultiplayerDuel.PlayersDuelConfig.TryGetValue(peer.Peer.Id, out var config))
@@ -224,7 +244,12 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         peer.Culture = culture;
         _duelMode!.CancelIncomingDuelRequestsForAiChallenge(peer);
         _lobby!.DespawnPlayer(peer);
-        Notify(network, $"已切换为{culture.Name}，正在重新打开该国选兵界面；请选择兵种并按界面提示重生。");
+        if (Mission.GetMissionBehavior<SpawnComponent>()?.SpawningBehavior is AdimiToolsDuelSpawningBehavior spawning)
+        {
+            spawning.RequestClassSelection(peer);
+        }
+
+        Notify(network, $"已切换至{GetCultureName(culture)}，请选择兵种并重生。");
     }
 
     private void Initialize()

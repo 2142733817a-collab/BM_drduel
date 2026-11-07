@@ -2,6 +2,22 @@ using System.Globalization;
 
 namespace AdimiDuel_Server.Duel;
 
+internal enum AdimiToolsAiArenaKind
+{
+    Original,
+    Spear,
+    Archer,
+    HorseArcher,
+}
+
+[System.Diagnostics.CodeAnalysis.SuppressMessage(
+    "StyleCop.CSharp.MaintainabilityRules", "SA1649:File name should match first type name",
+    Justification = "Scene group identity belongs to the shared arena policy types.")]
+internal readonly record struct AdimiToolsAiArenaSceneGroup(AdimiToolsAiArenaKind Kind, int Number)
+{
+    public override string ToString() => AdimiToolsAiArenaTags.GetSceneGroupTag(this);
+}
+
 internal enum AdimiToolsAiArenaState
 {
     Idle,
@@ -28,22 +44,39 @@ internal enum AdimiToolsAiArenaHitResult
 internal static class AdimiToolsAiArenaTags
 {
     public const string GroupPrefix = "adimi_ai_group_";
+    public const string SpearGroupPrefix = "adimi_ai_spear_group_";
+    public const string ArcherGroupPrefix = "adimi_ai_archer_group_";
+    public const string HorseArcherGroupPrefix = "adimi_ai_horse_archer_group_";
     public const string TriggerRoleTag = "adimi_ai_trigger";
     public const string EnhancedTriggerRoleTag = "adimi_ai_trigger_enhanced";
     public const string SimpleTriggerRoleTag = "adimi_ai_trigger_1";
     public const string NormalTriggerRoleTag = "adimi_ai_trigger_2";
     public const string HardTriggerRoleTag = "adimi_ai_trigger_3";
+    public const string SpearTriggerRoleTag = "adimi_ai_trigger_spear";
+    public const string ArcherTriggerRoleTag = "adimi_ai_trigger_archer";
+    public const string HorseArcherTriggerRoleTag = "adimi_ai_trigger_horse_archer";
     public const string SpawnRoleTag = "adimi_ai_spawn";
+    public const string SpearSpawnRoleTag = "adimi_ai_spear_spawn";
+    public const string ArcherSpawnRoleTag = "adimi_ai_archer_spawn";
+    public const string HorseArcherSpawnRoleTag = "adimi_ai_horse_archer_spawn";
     public const string BarrierRoleTag = "adimi_ai_barrier";
     public const string LadderRoleTag = "adimi_ai_ladder";
     public const string AreaRoleTag = "adimi_ai_area";
 
-    public static bool IsValidRoleCounts(int triggerCount, int spawnCount, int barrierCount, int areaCount, int enhancedTriggerCount = 0, int hardTriggerCount = 0, int ladderCount = 0)
+    public static bool IsValidRoleCounts(int triggerCount, int spawnCount, int barrierCount, int areaCount, int enhancedTriggerCount = 0, int hardTriggerCount = 0, int ladderCount = 0, int spearTriggerCount = 0)
     {
+        if (spearTriggerCount != 0)
+        {
+            return spearTriggerCount == 1 && spawnCount == 1
+                && triggerCount == 0 && enhancedTriggerCount == 0 && hardTriggerCount == 0
+                && barrierCount == 0 && ladderCount == 0 && areaCount == 0;
+        }
+
         return triggerCount is 0 or 1
             && enhancedTriggerCount is 0 or 1
             && hardTriggerCount is 0 or 1
-            && triggerCount + enhancedTriggerCount + hardTriggerCount > 0
+            && spearTriggerCount is 0 or 1
+            && triggerCount + enhancedTriggerCount + hardTriggerCount + spearTriggerCount > 0
             && spawnCount == 1
             && barrierCount >= 0
             && ladderCount >= 0
@@ -56,14 +89,47 @@ internal static class AdimiToolsAiArenaTags
     }
 
     public static bool TryGetTriggerDifficulty(IEnumerable<string> tags, out int difficulty)
+        => TryGetTriggerSelection(tags, out difficulty, out _);
+
+    public static bool TryGetTriggerSelection(IEnumerable<string> tags, out int difficulty, out bool spearInfantry)
+    {
+        bool valid = TryGetTriggerKind(tags, out difficulty, out AdimiToolsAiArenaKind kind);
+        spearInfantry = kind == AdimiToolsAiArenaKind.Spear;
+        return valid;
+    }
+
+    public static bool TryGetTriggerKind(IEnumerable<string> tags, out int difficulty, out AdimiToolsAiArenaKind kind)
     {
         difficulty = 0;
-        string[] selectors = tags.Where(tag => tag == SimpleTriggerRoleTag || tag == NormalTriggerRoleTag || tag == HardTriggerRoleTag)
+        kind = AdimiToolsAiArenaKind.Original;
+        string[] tagArray = tags.ToArray();
+        string[] specialSelectors = tagArray.Where(tag => tag is SpearTriggerRoleTag or ArcherTriggerRoleTag or HorseArcherTriggerRoleTag)
             .Distinct(StringComparer.Ordinal).ToArray();
-        if (selectors.Length > 1 || tags.Any(tag => IsTriggerTag(tag) && tag != TriggerRoleTag
+        if (specialSelectors.Length > 1)
+        {
+            return false;
+        }
+
+        if (specialSelectors.Length == 1)
+        {
+            kind = specialSelectors[0] == SpearTriggerRoleTag ? AdimiToolsAiArenaKind.Spear
+                : specialSelectors[0] == ArcherTriggerRoleTag ? AdimiToolsAiArenaKind.Archer : AdimiToolsAiArenaKind.HorseArcher;
+        }
+
+        string[] selectors = tagArray.Where(tag => tag == SimpleTriggerRoleTag || tag == NormalTriggerRoleTag || tag == HardTriggerRoleTag)
+            .Distinct(StringComparer.Ordinal).ToArray();
+        if (selectors.Length > 1 || (kind != AdimiToolsAiArenaKind.Original && (selectors.Length != 0 || tagArray.Contains(EnhancedTriggerRoleTag)))
+            || tagArray.Any(tag => IsTriggerTag(tag) && tag != TriggerRoleTag && tag != SpearTriggerRoleTag
+            && tag != ArcherTriggerRoleTag && tag != HorseArcherTriggerRoleTag
             && tag != EnhancedTriggerRoleTag && tag != SimpleTriggerRoleTag && tag != NormalTriggerRoleTag && tag != HardTriggerRoleTag))
         {
             return false;
+        }
+
+        if (kind != AdimiToolsAiArenaKind.Original)
+        {
+            difficulty = AdimiToolsAiArenaDifficulty.Simple;
+            return true;
         }
 
         if (selectors.Length == 1)
@@ -74,19 +140,115 @@ internal static class AdimiToolsAiArenaTags
             return true;
         }
 
-        difficulty = tags.Contains(EnhancedTriggerRoleTag) ? 2 : tags.Contains(TriggerRoleTag) ? 1 : 0;
+        difficulty = tagArray.Contains(EnhancedTriggerRoleTag) ? 2 : tagArray.Contains(TriggerRoleTag) ? 1 : 0;
         return difficulty != 0;
     }
 
     public static bool TryParseGroupTag(string? tag, out int groupId)
+        => TryParseTaggedGroup(tag, GroupPrefix, out groupId);
+
+    public static bool TryParseSpearGroupTag(string? tag, out int groupId)
+        => TryParseTaggedGroup(tag, SpearGroupPrefix, out groupId);
+
+    // Positive keys belong to ordinary arenas; negative keys belong to the
+    // independent spear namespace. Matching scene numbers never share state.
+    public static bool TryParseArenaGroupTag(string? tag, out int arenaId)
+    {
+        if (TryParseGroupTag(tag, out arenaId))
+        {
+            return true;
+        }
+
+        if (TryParseSpearGroupTag(tag, out int spearId))
+        {
+            arenaId = -spearId;
+            return true;
+        }
+
+        arenaId = 0;
+        return false;
+    }
+
+    public static bool IsArenaGroupTag(string tag)
+        => tag.StartsWith(GroupPrefix, StringComparison.Ordinal)
+            || tag.StartsWith(SpearGroupPrefix, StringComparison.Ordinal)
+            || tag.StartsWith(ArcherGroupPrefix, StringComparison.Ordinal)
+            || tag.StartsWith(HorseArcherGroupPrefix, StringComparison.Ordinal);
+
+    public static bool TryParseSceneGroupTag(string? tag, out AdimiToolsAiArenaSceneGroup group)
+    {
+        foreach (AdimiToolsAiArenaKind kind in Enum.GetValues<AdimiToolsAiArenaKind>())
+        {
+            if (TryParseTaggedGroup(tag, GetGroupPrefix(kind), out int number))
+            {
+                group = new(kind, number);
+                return true;
+            }
+        }
+
+        group = default;
+        return false;
+    }
+
+    public static string GetSceneGroupTag(AdimiToolsAiArenaSceneGroup group)
+        => FormatGroupTag(GetGroupPrefix(group.Kind), group.Number);
+
+    public static string GetSpawnRole(AdimiToolsAiArenaKind kind) => kind switch
+    {
+        AdimiToolsAiArenaKind.Original => SpawnRoleTag,
+        AdimiToolsAiArenaKind.Spear => SpearSpawnRoleTag,
+        AdimiToolsAiArenaKind.Archer => ArcherSpawnRoleTag,
+        AdimiToolsAiArenaKind.HorseArcher => HorseArcherSpawnRoleTag,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    public static AdimiToolsAiArenaKind GetRoleKind(IEnumerable<string> tags)
+    {
+        if (tags.Contains(SpearTriggerRoleTag) || tags.Contains(SpearSpawnRoleTag))
+        {
+            return AdimiToolsAiArenaKind.Spear;
+        }
+
+        if (tags.Contains(ArcherTriggerRoleTag) || tags.Contains(ArcherSpawnRoleTag))
+        {
+            return AdimiToolsAiArenaKind.Archer;
+        }
+
+        if (tags.Contains(HorseArcherTriggerRoleTag) || tags.Contains(HorseArcherSpawnRoleTag))
+        {
+            return AdimiToolsAiArenaKind.HorseArcher;
+        }
+
+        return AdimiToolsAiArenaKind.Original;
+    }
+
+    public static string GetGroupTag(int groupId)
+        => FormatGroupTag(GroupPrefix, groupId);
+
+    public static string GetSpearGroupTag(int groupId)
+        => FormatGroupTag(SpearGroupPrefix, groupId);
+
+    public static string GetArenaGroupTag(int arenaId)
+        => arenaId < 0 && arenaId != int.MinValue ? GetSpearGroupTag(-arenaId) : GetGroupTag(arenaId);
+
+    private static string GetGroupPrefix(AdimiToolsAiArenaKind kind) => kind switch
+    {
+        AdimiToolsAiArenaKind.Original => GroupPrefix,
+        AdimiToolsAiArenaKind.Spear => SpearGroupPrefix,
+        AdimiToolsAiArenaKind.Archer => ArcherGroupPrefix,
+        AdimiToolsAiArenaKind.HorseArcher => HorseArcherGroupPrefix,
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    private static bool TryParseTaggedGroup(string? tag, string prefix, out int groupId)
     {
         groupId = 0;
-        if (tag == null || !tag.StartsWith(GroupPrefix, StringComparison.Ordinal))
+        if (tag == null || !tag.StartsWith(prefix, StringComparison.Ordinal))
         {
             return false;
         }
 
-        ReadOnlySpan<char> suffix = tag.AsSpan(GroupPrefix.Length);
+        ReadOnlySpan<char> suffix = tag.AsSpan(prefix.Length);
         if (suffix.IsEmpty || suffix[0] < '1' || suffix[0] > '9')
         {
             return false;
@@ -104,14 +266,14 @@ internal static class AdimiToolsAiArenaTags
             && groupId > 0;
     }
 
-    public static string GetGroupTag(int groupId)
+    private static string FormatGroupTag(string prefix, int groupId)
     {
         if (groupId <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(groupId));
         }
 
-        return GroupPrefix + groupId.ToString(CultureInfo.InvariantCulture);
+        return prefix + groupId.ToString(CultureInfo.InvariantCulture);
     }
 }
 

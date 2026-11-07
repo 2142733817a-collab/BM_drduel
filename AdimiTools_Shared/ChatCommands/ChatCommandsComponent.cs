@@ -10,12 +10,14 @@ public class ChatCommandsComponent : GameHandler
     public const string CommandPrefix = "!";
 
     private readonly ChatCommand[] _commands;
+    private readonly FirstToDuelCommand _firstToCommand;
 
     public ChatCommandsComponent()
     {
+        _firstToCommand = new FirstToDuelCommand();
         _commands = new ChatCommand[]
         {
-            new FirstToDuelCommand(),
+            _firstToCommand,
         };
     }
 
@@ -66,6 +68,12 @@ public class ChatCommandsComponent : GameHandler
     private bool HandleChatMessage(NetworkCommunicator sender, string message, bool teamMessage = false)
     {
         AdimiToolsConsoleLog.Log("HandleChatMessage");
+        if (_firstToCommand.TryExecuteShortcut(sender, message))
+        {
+            _ = AdimiToolsLogManager.Instance.Log($"[CMD] {sender.UserName}: {message}");
+            return false;
+        }
+
         if (message.StartsWith("!") && HandleCommand(sender, message))
         {
             return false;

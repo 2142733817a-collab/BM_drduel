@@ -30,19 +30,40 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public int FinishAttempts { get; set; }
     }
 
+    private sealed class CoopMember
+    {
+        public MissionPeer Peer { get; init; } = null!;
+        public Agent Agent { get; init; } = null!;
+        public Team OriginalTeam { get; init; } = null!;
+        public Agent? Mount { get; set; }
+        public Team? OriginalMountTeam { get; set; }
+        public bool Died { get; set; }
+        public bool Withdrew { get; set; }
+        public bool ScoreSettled { get; set; }
+        public bool Recovered { get; set; }
+    }
+
     private sealed class Arena
     {
         public int Id { get; init; }
+        public AdimiToolsAiArenaKind Kind { get; init; }
+        public string Label { get; init; } = string.Empty;
         public List<GameEntity> Triggers { get; init; } = new();
         public GameEntity Spawn { get; init; } = null!;
         public List<BarrierMotion> Barriers { get; init; } = new();
         public VolumeBox? Area { get; init; }
         public AdimiToolsSharedArena? Shared { get; init; }
+        public AdimiToolsSharedArena? DuelBoundary { get; init; }
         public AdimiToolsArenaGlowGroup Glows { get; init; } = null!;
         public bool GlowsHidden { get; set; }
         public AdimiToolsAiArenaSession<MissionPeer> Session { get; } = new();
         public AdimiToolsAiArenaNavigationGuard NavigationGuard { get; } = new();
         public Agent? OwnerAgent { get; set; }
+        public List<CoopMember> CoopMembers { get; } = new();
+        public Dictionary<Agent, (Agent attacker, double time)> RecentBotHits { get; } = new();
+        public bool IsCoop => CoopMembers.Count != 0;
+        public bool HasCoopMember(MissionPeer peer) => CoopMembers.Any(member => ReferenceEquals(member.Peer, peer));
+        public bool OwnerWithdrew { get; set; }
         public Agent? OwnerMount { get; set; }
         public Team? OriginalMountTeam { get; set; }
         public string? MountKey { get; set; }
@@ -55,6 +76,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public int Difficulty { get; set; } = AdimiToolsAiArenaDifficulty.Simple;
         public bool Enhanced => Difficulty != AdimiToolsAiArenaDifficulty.Simple;
         public AdimiToolsAiArenaHardProfile? HardProfile { get; set; }
+        public IReadOnlyList<AdimiToolsAiArenaSpearProfile>? SpearCandidates { get; set; }
+        public List<AdimiToolsAiArenaSpearProfile> SpearProfiles { get; } = new();
+        public IReadOnlyList<AdimiToolsAiArenaRangedProfile>? RangedCandidates { get; set; }
+        public AdimiToolsAiArenaRangedProfile? RangedProfile { get; set; }
+        public IReadOnlyList<AdimiToolsAiLoadout>? BotLoadouts { get; set; }
         public AdimiToolsAiArenaSeries? Series { get; set; }
         public MatrixFrame OwnerRespawnFrame { get; set; }
         public bool RoundPending { get; set; }
@@ -119,6 +145,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     private readonly Dictionary<int, Arena> _arenas = new();
     private readonly Dictionary<MissionPeer, CompletionRespawn> _completionRespawns = new();
     private readonly Dictionary<MissionPeer, double> _nextInterferenceWarningAt = new();
+    private readonly HashSet<Agent> _deferredMountCleanup = new();
     private AdimiToolsMissionMultiplayerDuel? _duelMode;
     private double _nextCheckAt;
     private bool _ending;
@@ -159,7 +186,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         return (_completionRespawns.TryGetValue(peer, out CompletionRespawn? completed) && completed.SpawnFinished)
             || _arenas.Values.Any(arena => (arena.Session.IsReserved && ReferenceEquals(arena.Session.Owner, peer))
-            || (arena.CleanupPending && ReferenceEquals(arena.CleanupOwner, peer)));
+            || (arena.CleanupPending && ReferenceEquals(arena.CleanupOwner, peer))
+            || arena.HasCoopMember(peer));
     }
 
     public bool IsPositionInArena(Vec3 position) => !_sceneClearing && _arenas.Values.Any(arena => arena.Area?.IsPointIn(position) == true);
@@ -233,9 +261,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     public bool ShouldDelayRespawn(MissionPeer peer)
     {
+        if (ShouldDelayCoopRespawn(peer))
+        {
+            return true;
+        }
+
         Arena? arena = FindRespawningArena(peer);
         return arena != null && (Mission.CurrentTime < arena.NextRoundAt || !PreparePlayerRespawnFrame(arena));
     }
+
+    public bool ShouldDelayCoopRespawn(MissionPeer peer) => _arenas.Values.Any(arena => arena.IsCoop
+        && (arena.Session.IsReserved || (arena.CleanupPending && arena.PlayerTeam != null && peer.Team == arena.PlayerTeam))
+        && (ReferenceEquals(arena.Session.Owner ?? arena.CleanupOwner, peer) || arena.HasCoopMember(peer)));
 
     public void ConfigureRoundRespawn(MissionPeer peer, AgentBuildData buildData)
     {
@@ -316,20 +353,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     public void OnTriggerHit(int groupId, Agent agent, bool enhanced)
         => OnTriggerHit(groupId, agent, enhanced ? AdimiToolsAiArenaDifficulty.Normal : AdimiToolsAiArenaDifficulty.Simple);
 
-    public void OnTriggerHit(int groupId, Agent agent, int difficulty = AdimiToolsAiArenaDifficulty.Simple)
+    public void OnTriggerHit(int groupId, Agent agent, int difficulty = AdimiToolsAiArenaDifficulty.Simple, bool spearInfantry = false,
+        AdimiToolsAiArenaKind rangedKind = AdimiToolsAiArenaKind.Original)
     {
+        AdimiToolsAiArenaKind kind = spearInfantry ? AdimiToolsAiArenaKind.Spear : rangedKind;
         MissionPeer? peer = agent.MissionPeer;
         NetworkCommunicator? networkPeer = peer?.GetNetworkPeer();
         if (difficulty is < AdimiToolsAiArenaDifficulty.Simple or > AdimiToolsAiArenaDifficulty.Hard
+            || (kind != AdimiToolsAiArenaKind.Original && difficulty != AdimiToolsAiArenaDifficulty.Simple)
+            || (spearInfantry && rangedKind != AdimiToolsAiArenaKind.Original)
+            || rangedKind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Archer or AdimiToolsAiArenaKind.HorseArcher)
             || _ending || peer == null || networkPeer == null || !networkPeer.IsSynchronized || !networkPeer.IsConnectionActive
             || !ReferenceEquals(peer.ControlledAgent, agent) || !IsLivingAgent(agent)
             || peer.Team == null || peer.Team == Mission.SpectatorTeam
-            || !_arenas.TryGetValue(groupId, out Arena? arena) || arena.Failed)
+            || !_arenas.TryGetValue(groupId, out Arena? arena) || arena.Failed || arena.Kind != kind)
         {
             return;
         }
 
         double now = Mission.CurrentTime;
+        var teamBattle = Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>();
+        bool canYieldReadiness = !arena.Session.IsReserved && teamBattle?.CanYieldAiReadiness(arena.Area) == true;
+        if (arena.DuelBoundary?.IsOwnedByOther(arena) == true && !canYieldReadiness)
+        {
+            Notify(peer, "本场地已被其他对局占用。");
+            return;
+        }
+
         if (arena.Shared?.Owns(arena) == true && !arena.Session.IsReserved)
         {
             Notify(peer, "本场地仍在完成清理和障碍复位，请稍后再试。");
@@ -356,8 +406,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         if (_duelMode?.IsPeerBusyForAiChallenge(peer) == true || (!arena.Session.IsReserved && IsPeerReserved(peer))
-            || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true
-            || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPositionInActiveArena(agent.Position) == true)
+            || teamBattle?.IsPeerReservedForAi(peer, arena.Area) == true || teamBattle?.IsPositionInActiveArena(agent.Position) == true)
         {
             Notify(peer, "请先结束当前决斗或 AI 挑战。");
             return;
@@ -370,18 +419,44 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         if (arena.Session.State == AdimiToolsAiArenaState.CountingDown && ReferenceEquals(arena.Session.Owner, peer)
-            && arena.Difficulty != difficulty)
+            && (arena.Difficulty != difficulty || (arena.SpearCandidates != null) != spearInfantry))
         {
-            Notify(peer, $"本次已选择{AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty)} AI，请继续敲击同一种触发物，或等本次挑战结束后再切换。");
+            string selected = arena.SpearCandidates != null ? "持矛步兵" : AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI";
+            Notify(peer, $"本次已选择{selected}，请继续敲击同一种触发物，或等本次挑战结束后再切换。");
+            return;
+        }
+
+        IReadOnlyList<AdimiToolsAiArenaSpearProfile>? spearCandidates = null;
+        if (!arena.Session.IsReserved && spearInfantry
+            && !AdimiToolsAiArenaSpearProfile.TryCreateCatalog(out spearCandidates, out string spearReason))
+        {
+            Notify(peer, spearReason);
             return;
         }
 
         AdimiToolsAiArenaHardProfile? hardProfile = null;
+        IReadOnlyList<AdimiToolsAiArenaRangedProfile>? rangedCandidates = null;
+        if (!arena.Session.IsReserved && (kind is AdimiToolsAiArenaKind.Archer or AdimiToolsAiArenaKind.HorseArcher)
+            && !AdimiToolsAiArenaRangedProfile.TryCreateCatalog(kind == AdimiToolsAiArenaKind.HorseArcher, out rangedCandidates, out string rangedReason))
+        {
+            Notify(peer, rangedReason);
+            return;
+        }
+
         if (!arena.Session.IsReserved && difficulty == AdimiToolsAiArenaDifficulty.Hard
             && !AdimiToolsAiArenaHardProfile.TryCreate(peer, out hardProfile, out string reason))
         {
             Notify(peer, reason);
             return;
+        }
+
+        IReadOnlyList<MissionPeer> teammates = !arena.Session.IsReserved && arena.Area != null
+            ? teamBattle?.FindAiParticipants(arena.Area, peer) ?? Array.Empty<MissionPeer>()
+            : Array.Empty<MissionPeer>();
+        if (canYieldReadiness && arena.Area != null && teammates.Count > 0)
+        {
+            // Readiness has reserved the field but has not raised the barriers.
+            teamBattle!.YieldAiReadiness(arena.Area);
         }
 
         bool acquiredShared = arena.Shared != null && !arena.Shared.Owns(arena);
@@ -421,6 +496,16 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.GlowsHidden = false;
                 arena.Glows.Update(false, now);
                 _duelMode?.CancelIncomingDuelRequestsForAiChallenge(peer);
+                foreach (MissionPeer teammate in teammates)
+                {
+                    if (teammate.ControlledAgent is Agent teammateAgent && teammate.Team is Team teammateTeam)
+                    {
+                        arena.CoopMembers.Add(new CoopMember { Peer = teammate, Agent = teammateAgent, OriginalTeam = teammateTeam });
+                        _duelMode?.CancelIncomingDuelRequestsForAiChallenge(teammate);
+                        Notify(teammate, "你已加入本场组队 AI 挑战，一局定胜负。");
+                    }
+                }
+
                 arena.NavigationGuard.Reset();
                 arena.CompletionRecoveryStarted = false;
                 arena.CompletionHealthRestored = false;
@@ -432,15 +517,17 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.OriginalCharacter = new AgentBuildData(agent.Character);
                 arena.Difficulty = difficulty;
                 arena.HardProfile = hardProfile;
+                arena.SpearCandidates = spearCandidates;
+                arena.SpearProfiles.Clear();
+                arena.RangedCandidates = rangedCandidates;
+                arena.RangedProfile = null;
                 arena.OwnerAgent = agent;
                 arena.OriginalTeam = peer.Team;
                 arena.Equipment = SnapshotEquipment(agent);
-                // Infantry keeps the loadout it brought into this challenge,
-                // including a shield that may later break. Other roles retain
-                // their class/perk new-life kit. Decide while the actor is alive.
-                arena.RegularRespawnEquipment = agent.Character.DefaultFormationClass is FormationClass.Infantry or FormationClass.HeavyInfantry
-                    ? arena.Equipment.Clone()
-                    : SnapshotInitialEquipment(peer, agent);
+                // A completed AI loss restores the actual challenge-entry kit
+                // for every role, including weapons replaced at a rack and a
+                // shield that may later break. Capture before actor deletion.
+                arena.RegularRespawnEquipment = arena.Equipment.Clone();
                 arena.Banner = AdimiToolsDuelAppearance.CreateBanner(peer.Culture);
                 arena.MountKey = IsLivingAgent(agent.MountAgent) ? agent.MountAgent!.HorseCreationKey : null;
                 arena.OwnerRespawnFrame = arena.Spawn.GetGlobalFrame();
@@ -453,13 +540,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 MoveBarrier(arena, raised: true);
             }
 
-            string message = arena.Difficulty switch
+            if (arena.SpearCandidates != null)
             {
-                AdimiToolsAiArenaDifficulty.Normal => $"3 秒后生成 {arena.Session.RequestedCount} 个一般 AI：与你当前兵种、装备相同，熟练度 +50，生命上限翻倍。",
-                AdimiToolsAiArenaDifficulty.Hard => $"3 秒后生成 {arena.Session.RequestedCount} 个困难 AI：六国随机的固定步兵，熟练度 330，生命上限翻倍并加强护甲。",
-                _ => $"3 秒后生成 {arena.Session.RequestedCount} 个简单 AI：与你当前兵种、装备相同。",
-            };
-            Notify(peer, message);
+                // Select one country for the whole challenge. Further strikes
+                // only add troops of that country; later rounds keep the choice.
+                AdimiToolsAiArenaSpearProfile selected;
+                if (arena.SpearProfiles.Count == 0)
+                {
+                    var countries = arena.SpearCandidates.GroupBy(profile => profile.Culture.StringId).ToArray();
+                    var countryProfiles = countries[MBRandom.RandomInt(countries.Length)].ToArray();
+                    selected = countryProfiles[countryProfiles.Length == 1 ? 0 : MBRandom.RandomInt(countryProfiles.Length)];
+                }
+                else
+                {
+                    selected = arena.SpearProfiles[0];
+                }
+
+                arena.SpearProfiles.Add(selected);
+            }
+
+            if (arena.RangedCandidates != null && arena.RangedProfile == null)
+            {
+                arena.RangedProfile = arena.RangedCandidates[MBRandom.RandomInt(arena.RangedCandidates.Count)];
+            }
+
+            string message = AdimiToolsDuelGuidanceText.GetAiSpawn(arena.Session.RequestedCount,
+                arena.Difficulty, arena.SpearCandidates != null, (int)arena.Kind);
+            Notify(peer, message, ordinaryChat: true);
         }
         catch (Exception exception)
         {
@@ -486,7 +593,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         foreach (MissionPeer peer in _nextInterferenceWarningAt.Keys.ToArray())
         {
-            if (!peer.GetNetworkPeer().IsConnectionActive)
+            if (peer.GetNetworkPeer()?.IsConnectionActive != true)
             {
                 _nextInterferenceWarningAt.Remove(peer);
             }
@@ -494,8 +601,20 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         foreach (Arena arena in _arenas.Values)
         {
+            if (arena.DuelBoundary?.IsOwnedByOther(arena) == true)
+            {
+                continue;
+            }
+
             if (arena.Shared != null && !arena.Shared.Owns(arena))
             {
+                if (!arena.Shared.IsOwnedByOther(arena))
+                {
+                    // A free shared arena must confirm its idle decorations
+                    // even before the first AI or player match acquires it.
+                    arena.Glows.Update(false, now);
+                }
+
                 continue;
             }
 
@@ -524,9 +643,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         _nextCheckAt = now + CheckInterval;
+        foreach (Agent mount in _deferredMountCleanup.ToArray())
+        {
+            try
+            {
+                CleanupTrackedMount(mount);
+            }
+            catch (Exception exception)
+            {
+                AdimiToolsConsoleLog.Log($"Deferred AI mount cleanup failed: {exception.Message}");
+            }
+        }
+
         foreach (Arena arena in _arenas.Values)
         {
-            if (arena.Shared != null && !arena.Shared.Owns(arena))
+            if (arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena)))
             {
                 continue;
             }
@@ -555,6 +686,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 MissionPeer? owner = arena.Session.Owner;
                 Agent? ownerAgent = arena.OwnerAgent;
+                if (arena.IsCoop && owner != null && ownerAgent != null
+                    && arena.Session.State == AdimiToolsAiArenaState.Running)
+                {
+                    TickCoopChallenge(arena, owner, ownerAgent, now);
+                    continue;
+                }
+
                 NetworkCommunicator? networkPeer = owner?.GetNetworkPeer();
                 if (owner == null || ownerAgent == null || networkPeer == null || !networkPeer.IsConnectionActive
                     || !networkPeer.IsSynchronized
@@ -646,6 +784,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 if (arena.Session.ShouldStart(now))
                 {
                     StartChallenge(arena, owner, ownerAgent, now);
+                    if (arena.IsCoop && arena.Session.State == AdimiToolsAiArenaState.Running)
+                    {
+                        continue;
+                    }
                 }
 
                 if (arena.Session.State == AdimiToolsAiArenaState.Running)
@@ -660,21 +802,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         continue;
                     }
 
-                    if (arena.Area != null && !EvictOtherPlayers(arena, owner))
+                    if (arena.Area != null && !EvictOtherPlayers(arena, owner, new[] { ownerAgent }))
                     {
                         ResetArena(arena, "战斗附近存在无法遣返的玩家，本次挑战已取消。");
                         continue;
                     }
 
-                    foreach (Agent bot in arena.Bots.Where(IsLivingAgent))
-                    {
-                        bot.SetAutomaticTargetSelection(false);
-                        bot.SetTargetAgent(ownerAgent);
-                        if (arena.Area != null && !arena.Area.IsPointIn(bot.Position))
-                        {
-                            Teleport(bot, arena.Spawn.GetGlobalFrame());
-                        }
-                    }
+                    UpdateBotTargets(arena, ownerAgent);
                 }
             }
             catch (Exception exception)
@@ -684,14 +818,41 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
     }
 
+    public override void OnScoreHit(Agent victim, Agent attacker, WeaponComponentData attackerWeapon, bool isBlocked,
+        bool isSiegeEngineHit, in Blow blow, in AttackCollisionData collisionData, float damagedHp, float hitDistance, float shotDifficulty)
+    {
+        if (_ending || isBlocked || !float.IsFinite(damagedHp) || damagedHp <= 0f || attacker == null)
+        {
+            return;
+        }
+
+        foreach (Arena arena in _arenas.Values)
+        {
+            if (arena.IsCoop && arena.Session.State == AdimiToolsAiArenaState.Running && arena.Bots.Contains(victim)
+                && (ReferenceEquals(arena.OwnerAgent, attacker) || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, attacker))))
+            {
+                arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                return;
+            }
+        }
+    }
+
     public override void OnAgentRemoved(Agent affectedAgent, Agent affectorAgent, AgentState agentState, KillingBlow blow)
     {
         // Defer all engine mutations to OnMissionTick, outside native removal callbacks.
         foreach (Arena arena in _arenas.Values)
         {
-            if (ReferenceEquals(arena.OwnerAgent, affectedAgent) || arena.Bots.Contains(affectedAgent))
+            bool ownerRemoved = ReferenceEquals(arena.OwnerAgent, affectedAgent);
+            CoopMember? member = arena.CoopMembers.Find(candidate => ReferenceEquals(candidate.Agent, affectedAgent));
+            if (ownerRemoved || member != null || arena.Bots.Contains(affectedAgent))
             {
-                if (ReferenceEquals(arena.OwnerAgent, affectedAgent) && !arena.RoundPending)
+                bool died = agentState is AgentState.Killed or AgentState.Unconscious;
+                if (member != null && died)
+                {
+                    member.Died = true;
+                }
+
+                if (ownerRemoved && !arena.RoundPending && (!arena.IsCoop || died))
                 {
                     if (!arena.PlayerDeathFrame.HasValue)
                     {
@@ -701,7 +862,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         }
                         catch (Exception exception)
                         {
-                            AdimiToolsConsoleLog.Log($"AI group {arena.Id} death frame fallback: {exception.Message}");
+                            AdimiToolsConsoleLog.Log($"AI group {arena.Label} death frame fallback: {exception.Message}");
                         }
                     }
 
@@ -792,14 +953,28 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
     }
 
-    private static void Notify(MissionPeer peer, string message)
+    private static void Notify(MissionPeer peer, string message, bool ordinaryChat = false)
     {
-        NetworkCommunicator? networkPeer = peer.GetNetworkPeer();
-        if (networkPeer != null && networkPeer.IsConnectionActive)
+        try
         {
-            // Non-broadcast admin messages color the chat log without entering
-            // the client's timed quick-information queue. Audio is targeted separately.
-            AdimiToolsNotifier.ServerSendAiStatusToPlayer(networkPeer, message);
+            NetworkCommunicator? networkPeer = peer.GetNetworkPeer();
+            if (networkPeer?.IsConnectionActive != true)
+            {
+                return;
+            }
+
+            if (ordinaryChat)
+            {
+                AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer, message, playSound: true);
+            }
+            else
+            {
+                AdimiToolsNotifier.ServerSendAiStatusToPlayer(networkPeer, message);
+            }
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"AI notification failed: {exception}");
         }
     }
 
@@ -828,7 +1003,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         UpdateBarrierMovementCore(arena, Mission.Current.CurrentTime);
-        if (raised)
+        if (raised && arena.Session.IsReserved)
         {
             arena.BarrierEngaged = true;
         }
@@ -901,7 +1076,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         barrier.StartedAt = Mission.Current.CurrentTime;
         barrier.FinishAttempts = 0;
         barrier.StepAt = barrier.StartedAt;
-        AdimiToolsConsoleLog.Log($"AI group {groupId} {(barrier.IsLadder ? "ladder rotation" : "barrier")} {(raised ? "activate" : "restore")}, object {barrier.Synched.Id}, activeOffsetZ={barrier.ActiveOffsetZ:F1}: start {FormatBarrierFrame(startFrame)}; idle {FormatBarrierFrame(barrier.LoweredFrame)}; target {FormatBarrierFrame(frame)}; duration={(immediately ? 0f : AdimiToolsAiArenaSession<MissionPeer>.BarrierTravelSeconds):F1}s.");
+        AdimiToolsConsoleLog.Log($"AI group {AdimiToolsAiArenaTags.GetArenaGroupTag(groupId)} {(barrier.IsLadder ? "ladder rotation" : "barrier")} {(raised ? "activate" : "restore")}, object {barrier.Synched.Id}, activeOffsetZ={barrier.ActiveOffsetZ:F1}: start {FormatBarrierFrame(startFrame)}; idle {FormatBarrierFrame(barrier.LoweredFrame)}; target {FormatBarrierFrame(frame)}; duration={(immediately ? 0f : AdimiToolsAiArenaSession<MissionPeer>.BarrierTravelSeconds):F1}s.");
     }
 
     private static void UpdateBarrierMovement(Arena arena, double now)
@@ -986,7 +1161,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             if (progress >= 1f)
             {
                 MatrixFrame actual = barrier.Entity.GetGlobalFrame();
-                AdimiToolsConsoleLog.Log($"AI group {groupId} barrier finished, object {barrier.Synched.Id}: target {FormatBarrierFrame(target)}; actual {FormatBarrierFrame(actual)}.");
+                AdimiToolsConsoleLog.Log($"AI group {AdimiToolsAiArenaTags.GetArenaGroupTag(groupId)} barrier finished, object {barrier.Synched.Id}: target {FormatBarrierFrame(target)}; actual {FormatBarrierFrame(actual)}.");
                 barrier.TargetFrame = null;
             }
         }
@@ -994,7 +1169,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             barrier.FinishAttempts++;
             barrier.StepAt = now + 2d;
-            AdimiToolsConsoleLog.Log($"AI group {groupId} barrier object {barrier.Synched.Id} step failed (attempt {barrier.FinishAttempts}/3): {exception.Message}");
+            AdimiToolsConsoleLog.Log($"AI group {AdimiToolsAiArenaTags.GetArenaGroupTag(groupId)} barrier object {barrier.Synched.Id} step failed (attempt {barrier.FinishAttempts}/3): {exception.Message}");
         }
     }
 
@@ -1162,28 +1337,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         return face.IsValid();
     }
 
-    private Equipment SnapshotInitialEquipment(MissionPeer peer, Agent owner)
-    {
-        // A completed loss starts a new life with the class/perks selected at
-        // reservation, independently of picked-up or dropped training weapons.
-        Equipment equipment = owner.Character.Equipment.Clone();
-        var alternatives = MPPerkObject.GetOnSpawnPerkHandler(peer)?.GetAlternativeEquipments(isPlayer: true);
-        if (alternatives != null)
-        {
-            foreach (var alternative in alternatives)
-            {
-                equipment[alternative.Item1] = alternative.Item2;
-            }
-        }
-
-        if (_duelMode != null)
-        {
-            _duelMode.AddCosmeticItemsToEquipment(equipment, _duelMode.GetUsedCosmeticsFromPeer(peer, owner.Character));
-        }
-
-        return equipment;
-    }
-
     private Equipment SnapshotEquipment(Agent owner)
     {
         Equipment equipment = owner.SpawnEquipment.Clone();
@@ -1234,8 +1387,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         agent.TeleportToPosition(frame.origin);
         WorldPosition position = new(Mission.Current.Scene, frame.origin);
         GameNetwork.BeginBroadcastModuleEvent();
-        GameNetwork.WriteMessage(new AgentTeleportToFrame(agent.Index, position.GetGroundVec3(), direction));
-        GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord);
+        try
+        {
+            GameNetwork.WriteMessage(new AgentTeleportToFrame(agent.Index, position.GetGroundVec3(), direction));
+        }
+        finally
+        {
+            GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord);
+        }
     }
 
     private void ReleaseSharedIfClean(Arena arena, double now)
@@ -1257,34 +1416,45 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             AdimiToolsAiArenaTags.EnhancedTriggerRoleTag, AdimiToolsAiArenaTags.SimpleTriggerRoleTag,
             AdimiToolsAiArenaTags.NormalTriggerRoleTag, AdimiToolsAiArenaTags.HardTriggerRoleTag,
             AdimiToolsAiArenaTags.LadderRoleTag,
+            AdimiToolsAiArenaTags.SpearSpawnRoleTag,
+            AdimiToolsAiArenaTags.ArcherSpawnRoleTag, AdimiToolsAiArenaTags.HorseArcherSpawnRoleTag,
         };
         var entities = roles.SelectMany(role => Mission.Scene.FindEntitiesWithTag(role))
             .Concat(Mission.Scene.FindEntitiesWithTagExpression("adimi_ai_trigger(_.*)*")).Distinct().ToList();
-        var groups = new Dictionary<int, List<GameEntity>>();
-        var invalidGroups = new HashSet<int>();
+        var groups = new Dictionary<AdimiToolsAiArenaSceneGroup, List<GameEntity>>();
+        var invalidGroups = new HashSet<AdimiToolsAiArenaSceneGroup>();
         foreach (GameEntity entity in entities)
         {
-            string[] tags = entity.Tags.Where(tag => tag.StartsWith(AdimiToolsAiArenaTags.GroupPrefix, StringComparison.Ordinal)).ToArray();
-            int[] groupIds = tags.Where(tag => AdimiToolsAiArenaTags.TryParseGroupTag(tag, out _)).Select(tag =>
+            string[] tags = entity.Tags.Where(AdimiToolsAiArenaTags.IsArenaGroupTag).ToArray();
+            AdimiToolsAiArenaSceneGroup[] groupIds = tags.Where(tag => AdimiToolsAiArenaTags.TryParseSceneGroupTag(tag, out _)).Select(tag =>
             {
-                AdimiToolsAiArenaTags.TryParseGroupTag(tag, out int id);
+                AdimiToolsAiArenaTags.TryParseSceneGroupTag(tag, out AdimiToolsAiArenaSceneGroup id);
                 return id;
             }).ToArray();
             // Numbered difficulty tags modify one trigger role. Preserve the
             // original role and group when copying an existing statue.
             bool isTrigger = entity.Tags.Any(AdimiToolsAiArenaTags.IsTriggerTag);
+            AdimiToolsAiArenaKind roleKind = AdimiToolsAiArenaTags.GetRoleKind(entity.Tags);
             int roleCount = (isTrigger ? 1 : 0)
                 + roles.Skip(1).Take(3).Count(entity.HasTag)
-                + (entity.HasTag(AdimiToolsAiArenaTags.LadderRoleTag) ? 1 : 0);
+                + (entity.HasTag(AdimiToolsAiArenaTags.LadderRoleTag) ? 1 : 0)
+                + (entity.HasTag(AdimiToolsAiArenaTags.SpearSpawnRoleTag) ? 1 : 0)
+                + (entity.HasTag(AdimiToolsAiArenaTags.ArcherSpawnRoleTag) ? 1 : 0)
+                + (entity.HasTag(AdimiToolsAiArenaTags.HorseArcherSpawnRoleTag) ? 1 : 0);
             if (tags.Length != 1 || groupIds.Length != 1 || roleCount != 1
+                || (groupIds.Length == 1 && roleKind != groupIds[0].Kind)
                 || (isTrigger && !AdimiToolsAiArenaTags.TryGetTriggerDifficulty(entity.Tags, out _)))
             {
-                foreach (int id in groupIds)
+                // A wrongly tagged spear prop must not disable an existing
+                // ordinary arena merely because its scene number is the same.
+                foreach (AdimiToolsAiArenaSceneGroup id in groupIds.Where(id => roleKind == id.Kind
+                    || (groupIds.Length == 1 && (roleKind == AdimiToolsAiArenaKind.Original
+                        || id.Kind != AdimiToolsAiArenaKind.Original))))
                 {
                     invalidGroups.Add(id);
                 }
 
-                AdimiToolsConsoleLog.Log($"AI arena skipped entity '{entity.Name}': use exactly one role, one difficulty selector and one canonical group tag.");
+                AdimiToolsConsoleLog.Log($"AI arena skipped entity '{entity.Name}': use one role and one matching mode-specific group tag.");
                 continue;
             }
 
@@ -1305,7 +1475,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             for (GameEntity? parent = entry.Key.Parent; parent != null; parent = parent.Parent)
             {
-                if (barrierGroups.TryGetValue(parent, out int parentGroup)
+                if (barrierGroups.TryGetValue(parent, out AdimiToolsAiArenaSceneGroup parentGroup)
                     && (parentGroup != entry.Value || parent.HasTag(AdimiToolsAiArenaTags.LadderRoleTag) != entry.Key.HasTag(AdimiToolsAiArenaTags.LadderRoleTag)))
                 {
                     invalidGroups.Add(parentGroup);
@@ -1315,19 +1485,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
         }
 
+        // Keep all ordinary/spear IDs stable, even when a ranged group occurs
+        // earlier in the scene. New mode identities use only unclaimed keys.
+        var reservedIds = groups.Keys.Where(key => key.Kind is AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
+            .Select(key => key.Kind == AdimiToolsAiArenaKind.Spear ? -key.Number : key.Number).ToHashSet();
+        reservedIds.UnionWith(_arenas.Keys);
+        int nextRangedId = int.MinValue;
         foreach (var group in groups)
         {
-            List<GameEntity> normalTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerDifficulty(entity.Tags, out int level) && level == AdimiToolsAiArenaDifficulty.Simple).ToList();
+            List<GameEntity> normalTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerKind(entity.Tags, out int level, out AdimiToolsAiArenaKind kind) && kind == AdimiToolsAiArenaKind.Original && level == AdimiToolsAiArenaDifficulty.Simple).ToList();
             List<GameEntity> enhancedTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerDifficulty(entity.Tags, out int level) && level == AdimiToolsAiArenaDifficulty.Normal).ToList();
             List<GameEntity> hardTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerDifficulty(entity.Tags, out int level) && level == AdimiToolsAiArenaDifficulty.Hard).ToList();
-            List<GameEntity> triggers = normalTriggers.Concat(enhancedTriggers).Concat(hardTriggers).ToList();
-            List<GameEntity> spawns = group.Value.Where(entity => entity.HasTag(roles[1])).ToList();
+            List<GameEntity> spearTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerSelection(entity.Tags, out _, out bool spear) && spear).ToList();
+            List<GameEntity> rangedTriggers = group.Value.Where(entity => AdimiToolsAiArenaTags.TryGetTriggerKind(entity.Tags, out _, out AdimiToolsAiArenaKind kind)
+                && kind is AdimiToolsAiArenaKind.Archer or AdimiToolsAiArenaKind.HorseArcher).ToList();
+            List<GameEntity> triggers = normalTriggers.Concat(enhancedTriggers).Concat(hardTriggers).Concat(spearTriggers).Concat(rangedTriggers).ToList();
+            string spawnRole = AdimiToolsAiArenaTags.GetSpawnRole(group.Key.Kind);
+            List<GameEntity> spawns = group.Value.Where(entity => entity.HasTag(spawnRole)).ToList();
             List<GameEntity> barriers = group.Value.Where(entity => entity.HasTag(roles[2])).ToList();
             List<GameEntity> ladders = group.Value.Where(entity => entity.HasTag(AdimiToolsAiArenaTags.LadderRoleTag)).ToList();
             List<GameEntity> areas = group.Value.Where(entity => entity.HasTag(roles[3])).ToList();
-            if (invalidGroups.Contains(group.Key) || !AdimiToolsAiArenaTags.IsValidRoleCounts(normalTriggers.Count, spawns.Count, barriers.Count, areas.Count, enhancedTriggers.Count, hardTriggers.Count, ladders.Count))
+            bool validRoles = group.Key.Kind is AdimiToolsAiArenaKind.Archer or AdimiToolsAiArenaKind.HorseArcher
+                ? rangedTriggers.Count == 1 && spawns.Count == 1 && triggers.Count == 1
+                    && barriers.Count == 0 && ladders.Count == 0 && areas.Count == 0
+                : rangedTriggers.Count == 0 && AdimiToolsAiArenaTags.IsValidRoleCounts(normalTriggers.Count, spawns.Count, barriers.Count, areas.Count, enhancedTriggers.Count, hardTriggers.Count, ladders.Count, spearTriggers.Count);
+            if (invalidGroups.Contains(group.Key) || !validRoles)
             {
-                AdimiToolsConsoleLog.Log($"AI group {group.Key} disabled: needs one spawn and at least one trigger (at most one per difficulty); barriers/ladders may be omitted or multiple, area may be omitted or appear once; moving hierarchies cannot span groups or directions.");
+                AdimiToolsConsoleLog.Log($"AI group {group.Key} disabled: ordinary arenas need one spawn and at least one difficulty trigger; independent modes need exactly one matching trigger and one dedicated spawn, without area/barrier/ladder.");
                 continue;
             }
 
@@ -1395,14 +1579,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }
             }
 
+            int runtimeId;
+            if (group.Key.Kind is AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
+            {
+                runtimeId = group.Key.Kind == AdimiToolsAiArenaKind.Spear ? -group.Key.Number : group.Key.Number;
+            }
+            else
+            {
+                while (reservedIds.Contains(nextRangedId))
+                {
+                    nextRangedId = checked(nextRangedId + 1);
+                }
+
+                runtimeId = nextRangedId;
+                reservedIds.Add(runtimeId);
+            }
+
             var arena = new Arena
             {
-                Id = group.Key,
+                Id = runtimeId,
+                Kind = group.Key.Kind,
+                Label = group.Key.ToString(),
                 Triggers = triggers,
                 Spawn = spawns[0],
                 Barriers = motions,
                 Area = area,
                 Shared = area != null && areas[0].HasTag("adimi_team_area") ? AdimiToolsSharedArena.For(Mission, area) : null,
+                DuelBoundary = area != null ? AdimiToolsSharedArena.For(Mission, area) : null,
                 Glows = AdimiToolsArenaGlowGroup.Create(Mission.Scene, areas.Count == 0 ? null : areas[0]),
             };
             try
@@ -1421,33 +1624,55 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         throw new InvalidOperationException("Could not attach AI hit observer.");
                     }
 
-                    AdimiToolsAiArenaTags.TryGetTriggerDifficulty(triggerEntity.Tags, out int difficulty);
-                    trigger.Bind(this, arena.Id, difficulty);
+                    AdimiToolsAiArenaTags.TryGetTriggerSelection(triggerEntity.Tags, out int difficulty, out bool spear);
+                    AdimiToolsAiArenaTags.TryGetTriggerKind(triggerEntity.Tags, out _, out AdimiToolsAiArenaKind triggerKind);
+                    trigger.Bind(this, arena.Id, difficulty, spear,
+                        triggerKind is AdimiToolsAiArenaKind.Archer or AdimiToolsAiArenaKind.HorseArcher ? triggerKind : AdimiToolsAiArenaKind.Original);
                 }
 
-                arena.Shared?.RegisterBoundary(arena, isAi: true, arena.Barriers.Select(barrier => barrier.Entity),
+                arena.DuelBoundary?.RegisterBoundary(arena, isAi: true, arena.Barriers.Select(barrier => barrier.Entity),
                     (raised, immediately) => MoveBarrierCore(arena, raised, immediately),
                     now => UpdateSharedBoundaryMovement(arena, now),
-                    raised => AreOwnBarriersAtTarget(arena, raised));
+                    raised => AreOwnBarriersAtTarget(arena, raised),
+                    isAvailableForDuel: () => !_ending && !_sceneClearing && !arena.Failed && !arena.Session.IsReserved
+                        && !arena.CleanupPending && !arena.AreaCleanupPending && Mission.CurrentTime > arena.AreaCleanupUntil
+                        && Mission.CurrentTime >= arena.LoweringUntil && AreOwnBarriersAtTarget(arena, raised: false),
+                    duelSpawn: arena.Spawn);
                 _arenas.Add(arena.Id, arena);
-                AdimiToolsConsoleLog.Log($"AI group {arena.Id} ready; barrier={barriers.Count != 0}, moving roots={motions.Count}, ladder roots={motions.Count(motion => motion.IsLadder)}, inherited tagged children={movingEntities.Count - barrierRoots.Count}, area={area != null}, simple triggers={normalTriggers.Count}, normal triggers={enhancedTriggers.Count}, hard triggers={hardTriggers.Count}.");
+                AdimiToolsConsoleLog.Log($"AI group {arena.Label} ready; barrier={barriers.Count != 0}, moving roots={motions.Count}, ladder roots={motions.Count(motion => motion.IsLadder)}, inherited tagged children={movingEntities.Count - barrierRoots.Count}, area={area != null}, simple triggers={normalTriggers.Count}, normal triggers={enhancedTriggers.Count}, hard triggers={hardTriggers.Count}, spear triggers={spearTriggers.Count}.");
             }
             catch (Exception exception)
             {
-                AdimiToolsConsoleLog.Log($"AI group {arena.Id} initialization failed: {exception}");
+                AdimiToolsConsoleLog.Log($"AI group {arena.Label} initialization failed: {exception}");
             }
         }
     }
 
     private bool IsAgentPresent(Agent? agent)
     {
-        return !_sceneClearing && agent != null && Mission.AllAgents.Contains(agent);
+        try
+        {
+            return !_sceneClearing && !Mission.IsFinalized && agent != null
+                && Mission.AllAgents.Contains(agent) && agent.State != AgentState.Deleted;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private bool IsLivingAgent(Agent? agent)
     {
-        return agent != null && IsAgentPresent(agent) && agent.IsActive() && agent.Health > 0f && !agent.IsFadingOut();
+        return !_sceneClearing && AdimiToolsMountSafety.IsLiving(Mission, agent);
     }
+
+    private bool CanRestoreOwnerMountTeam(Arena arena, Agent? mount)
+        => CanRestoreMountTeam(arena.OwnerAgent, mount);
+
+    private bool CanRestoreMountTeam(Agent? agent, Agent? mount)
+        => IsLivingAgent(mount)
+            && AdimiToolsMountSafety.TryGetCurrentRider(Mission, mount, out Agent? rider)
+            && (rider == null || ReferenceEquals(rider, agent));
 
     private MatrixFrame GetPlayerGroundFrame(Agent agent)
     {
@@ -1488,7 +1713,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         catch (Exception exception)
         {
             cleared = false;
-            AdimiToolsConsoleLog.Log($"AI group {arena.Id} area cleanup will retry: {exception.Message}");
+            AdimiToolsConsoleLog.Log($"AI group {arena.Label} area cleanup will retry: {exception.Message}");
         }
 
         arena.AreaCleanupPending = !cleared;
@@ -1503,12 +1728,131 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             && arena.RoundPending && arena.AwaitingRespawn);
     }
 
+    private bool CanFightInArena(Arena arena, MissionPeer peer, Agent agent, Team? team)
+        => IsLivingAgent(agent) && ReferenceEquals(peer.ControlledAgent, agent)
+            && ReferenceEquals(agent.MissionPeer, peer) && peer.Team == team && agent.Team == team
+            && peer.GetNetworkPeer() is { IsConnectionActive: true, IsSynchronized: true }
+            && arena.Area?.IsPointIn(GetPlayerGroundFrame(agent).origin) == true;
+
+    private bool IsDefeatedAgent(Agent agent) => IsAgentPresent(agent)
+        && (agent.State is AgentState.Killed or AgentState.Unconscious || agent.Health <= 0f);
+
+    private void TickCoopChallenge(Arena arena, MissionPeer owner, Agent ownerAgent, double now)
+    {
+        var fighters = new List<Agent>();
+        arena.OwnerDiedThisRound |= IsDefeatedAgent(ownerAgent);
+        if (!arena.OwnerDiedThisRound && !arena.OwnerWithdrew && CanFightInArena(arena, owner, ownerAgent, arena.PlayerTeam))
+        {
+            fighters.Add(ownerAgent);
+        }
+        else if (!arena.OwnerDiedThisRound)
+        {
+            arena.OwnerWithdrew = true;
+        }
+
+        foreach (CoopMember member in arena.CoopMembers)
+        {
+            member.Died |= IsDefeatedAgent(member.Agent);
+            if (!member.Died && !member.Withdrew && CanFightInArena(arena, member.Peer, member.Agent, arena.PlayerTeam))
+            {
+                fighters.Add(member.Agent);
+            }
+            else if (!member.Died)
+            {
+                member.Withdrew = true;
+            }
+        }
+
+        if (fighters.Count == 0)
+        {
+            if (arena.OwnerDiedThisRound && !arena.OwnerWithdrew && arena.CoopMembers.All(member => member.Died && !member.Withdrew))
+            {
+                ResolveRound(arena, playerWon: false, now);
+            }
+            else
+            {
+                ResetArena(arena, "已无玩家能够继续战斗，本次组队 AI 挑战已取消。");
+            }
+
+            return;
+        }
+
+        if (!arena.Bots.Any(IsLivingAgent))
+        {
+            ResolveRound(arena, playerWon: true, now);
+            return;
+        }
+
+        if (!EvictOtherPlayers(arena, owner, fighters))
+        {
+            ResetArena(arena, "战斗附近存在无法遣返的玩家，本次挑战已取消。");
+            return;
+        }
+
+        UpdateBotTargets(arena, fighters[0], fighters);
+    }
+
+    private void UpdateBotTargets(Arena arena, Agent fighter, IReadOnlyList<Agent>? fighters = null)
+    {
+        if (fighters == null)
+        {
+            SyncCurrentMountTeam(arena, fighter);
+        }
+        else
+        {
+            foreach (Agent player in fighters)
+            {
+                SyncCurrentMountTeam(arena, player);
+            }
+        }
+
+        var assigned = fighters?.ToDictionary(agent => agent, _ => 0);
+        foreach (Agent bot in arena.Bots.Where(IsLivingAgent))
+        {
+            bot.SetAutomaticTargetSelection(false);
+            if (assigned == null)
+            {
+                bot.SetTargetAgent(fighter);
+            }
+            else
+            {
+                Agent? recentAttacker = arena.RecentBotHits.TryGetValue(bot, out var hit) && Mission.CurrentTime - hit.time <= 2d
+                    ? hit.attacker : null;
+                Agent target = assigned.Keys.OrderBy(agent => assigned[agent])
+                    .ThenByDescending(agent => ReferenceEquals(agent, recentAttacker))
+                    .ThenBy(agent => bot.Position.DistanceSquared(agent.Position))
+                    .First();
+                bot.SetTargetAgent(target);
+                assigned[target]++;
+            }
+
+            if (arena.Area != null && !arena.Area.IsPointIn(bot.Position))
+            {
+                Teleport(bot, arena.Spawn.GetGlobalFrame());
+            }
+        }
+    }
+
+    private void SyncCurrentMountTeam(Arena arena, Agent rider, Agent? originalMount = null)
+    {
+        Agent? mount = rider.MountAgent;
+        if (!ReferenceEquals(mount, originalMount) && rider.Team != null && IsLivingAgent(mount) && mount!.Team != rider.Team
+            && (mount.Team == arena.BotTeam || mount.Team == arena.PlayerTeam)
+            && AdimiToolsMountSafety.TryGetCurrentRider(Mission, mount, out Agent? current)
+            && ReferenceEquals(current, rider))
+        {
+            mount.SetTeam(rider.Team, sync: true);
+        }
+    }
+
     private void StartChallenge(Arena arena, MissionPeer owner, Agent ownerAgent, double now)
     {
         if (arena.Shared != null && !arena.Shared.IsAtTarget(arena, raised: true))
         {
             return;
         }
+
+        arena.CoopMembers.RemoveAll(member => !CanFightInArena(arena, member.Peer, member.Agent, member.OriginalTeam));
 
         if (!BeginAreaCleanup(arena))
         {
@@ -1521,7 +1865,25 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             return;
         }
 
-        if (arena.Equipment == null || !PrepareSpawnPositions(arena, ownerAgent))
+        if (arena.Equipment == null)
+        {
+            ResetArena(arena, "AI 装备数据缺失，本次挑战已取消。");
+            return;
+        }
+
+        AdimiToolsAiArenaSpearProfile? spear = arena.SpearProfiles.FirstOrDefault();
+        BasicCharacterObject character = arena.RangedProfile?.Character ?? spear?.Character
+            ?? arena.HardProfile?.Character ?? arena.OriginalCharacter!.AgentCharacter;
+        Equipment equipment = arena.RangedProfile?.Equipment ?? spear?.Equipment ?? arena.HardProfile?.Equipment ?? arena.Equipment;
+        if (!AdimiToolsAiLoadout.TryCreate(character, equipment, arena.Kind, arena.Session.RequestedCount,
+            out var loadouts, out string loadoutFailure))
+        {
+            ResetArena(arena, loadoutFailure);
+            return;
+        }
+
+        arena.BotLoadouts = loadouts;
+        if (!PrepareSpawnPositions(arena))
         {
             ResetArena(arena, "AI 出生点附近没有足够的可用导航网格，请调整地图后重试。");
             return;
@@ -1533,7 +1895,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             return;
         }
 
-        arena.Series = new AdimiToolsAiArenaSeries(arena.Session.RequestedCount, _duelMode?.GetFirstToLimitForAiChallenge(owner) ?? 1);
+        arena.Series = new AdimiToolsAiArenaSeries(arena.Session.RequestedCount,
+            arena.IsCoop ? 1 : _duelMode?.GetFirstToLimitForAiChallenge(owner) ?? 1);
         arena.StartedAiCount = arena.Session.RequestedCount;
         arena.RoundPending = false;
         arena.OwnerDiedThisRound = false;
@@ -1542,24 +1905,72 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         arena.OriginalMountTeam = arena.OwnerMount?.Team;
         owner.Team = arena.PlayerTeam;
         ownerAgent.SetTeam(arena.PlayerTeam!, sync: true);
-        arena.OwnerMount?.SetTeam(arena.PlayerTeam!, sync: true);
+        if (CanRestoreOwnerMountTeam(arena, arena.OwnerMount))
+        {
+            arena.OwnerMount!.SetTeam(arena.PlayerTeam!, sync: true);
+        }
+
+        foreach (CoopMember member in arena.CoopMembers)
+        {
+            member.Mount = IsLivingAgent(member.Agent.MountAgent) ? member.Agent.MountAgent : null;
+            member.OriginalMountTeam = member.Mount?.Team;
+            member.Peer.Team = arena.PlayerTeam;
+            member.Agent.SetTeam(arena.PlayerTeam!, sync: true);
+            if (CanRestoreMountTeam(member.Agent, member.Mount))
+            {
+                member.Mount!.SetTeam(arena.PlayerTeam!, sync: true);
+            }
+
+            AdimiToolsMissionMultiplayerDuel.RestoreAgentForAiChallenge(member.Agent);
+        }
+
         PrepareRoundOwner(arena, ownerAgent);
         SpawnRoundBots(arena, ownerAgent);
         arena.GlowsHidden = true;
         arena.Glows.Update(true, now);
-        _duelMode?.BeginAiChallengeDisplay(arena.Id, owner, ownerAgent, arena.StartedAiCount, arena.Difficulty, arena.HardProfile?.TroopName);
-        Notify(owner, $"已生成 {arena.Bots.Count} 个{AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty)} AI，只会与你交战。本次{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}。");
+        _duelMode?.BeginAiChallengeDisplay(arena.Id, owner, ownerAgent, arena.StartedAiCount, arena.Difficulty,
+            arena.SpearCandidates != null ? "持矛步兵" : arena.RangedProfile?.TroopName ?? arena.HardProfile?.TroopName);
+        string opponents = arena.Kind switch
+        {
+            AdimiToolsAiArenaKind.Spear => "持矛步兵",
+            AdimiToolsAiArenaKind.Archer => "顶级射手",
+            AdimiToolsAiArenaKind.HorseArcher => "骑射手",
+            _ => AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI",
+        };
+        if (arena.IsCoop)
+        {
+            Agent[] fighters = arena.CoopMembers.Select(member => member.Agent).Prepend(ownerAgent).ToArray();
+            UpdateBotTargets(arena, ownerAgent, fighters);
+            string message = $"已生成 {arena.Bots.Count} 个{opponents}，{fighters.Length} 人组队挑战开始，一局定胜负。";
+            Notify(owner, message);
+            foreach (CoopMember member in arena.CoopMembers)
+            {
+                Notify(member.Peer, message);
+            }
+        }
+        else
+        {
+            Notify(owner, $"已生成 {arena.Bots.Count} 个{opponents}，只会与你交战。本次{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}。");
+        }
     }
 
     private void SpawnRoundBots(Arena arena, Agent ownerAgent, bool activate = true)
     {
         arena.PlayerTeam!.SetIsEnemyOf(arena.BotTeam!, activate);
         arena.BotTeam!.SetIsEnemyOf(arena.PlayerTeam, activate);
-        var botCharacter = arena.HardProfile?.Character ?? arena.OriginalCharacter!.AgentCharacter;
-        Equipment botEquipment = arena.HardProfile?.Equipment ?? arena.Equipment!;
+        if (arena.SpearCandidates != null && arena.SpearProfiles.Count != arena.SpawnPositions.Count)
+        {
+            throw new InvalidOperationException("持矛步兵配置数量与召唤数量不一致，本次挑战无法开始。");
+        }
 
+        int profileIndex = 0;
         foreach (Vec3 position in arena.SpawnPositions)
         {
+            AdimiToolsAiArenaSpearProfile? spear = arena.SpearCandidates != null ? arena.SpearProfiles[profileIndex] : null;
+            AdimiToolsAiLoadout? loadout = arena.BotLoadouts?[profileIndex++];
+            AdimiToolsAiArenaRangedProfile? ranged = arena.RangedProfile;
+            BasicCharacterObject botCharacter = ranged?.Character ?? spear?.Character ?? arena.HardProfile?.Character ?? arena.OriginalCharacter!.AgentCharacter;
+            Equipment botEquipment = loadout?.Equipment ?? ranged?.Equipment ?? spear?.Equipment ?? arena.HardProfile?.Equipment ?? arena.Equipment!;
             Vec2 direction = (ownerAgent.Position - position).AsVec2.Normalized();
             if (direction.LengthSquared < 0.1f)
             {
@@ -1571,7 +1982,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 .Controller(AgentControllerType.AI)
                 .TroopOrigin(arena.Enhanced
                     ? new AdimiToolsAiArenaEnhancedOrigin(botCharacter, arena.Difficulty, arena.HardProfile)
-                    : new BasicBattleAgentOrigin(botCharacter))
+                    : ranged != null && (ranged.BowSkillOverride != null || ranged.TwoHandedSkillOverride != null)
+                        ? new AdimiToolsAiArenaSkillOrigin(botCharacter, ranged.BowSkillOverride, ranged.TwoHandedSkillOverride)
+                        : new BasicBattleAgentOrigin(botCharacter))
                 .Equipment(botEquipment.Clone())
                 .FixedEquipment(true)
                 .NoHorses(botEquipment[EquipmentIndex.Horse].IsEmpty)
@@ -1581,34 +1994,50 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 .ClothingColor2(ownerAgent.ClothingColor2)
                 .InitialPosition(in position)
                 .InitialDirection(in direction);
-            if (arena.HardProfile == null && !string.IsNullOrEmpty(arena.MountKey))
+            if (loadout?.MountChanged != true && ranged == null && spear == null && arena.HardProfile == null && !string.IsNullOrEmpty(arena.MountKey))
             {
                 build.MountKey(arena.MountKey);
             }
 
-            AdimiToolsDuelAppearance.ApplyToBuild(build, arena.HardProfile?.Culture ?? arena.Session.Owner?.Culture);
+            AdimiToolsDuelAppearance.ApplyToBuild(build, ranged?.Culture ?? spear?.Culture ?? arena.HardProfile?.Culture ?? arena.Session.Owner?.Culture);
 
             // Never attach MissionPeer(owner): that would replace the human's
             // ControlledAgent. Each AI has independent equipment and ownership.
             Agent bot = Mission.SpawnAgent(build, spawnFromAgentVisuals: false);
             arena.Bots.Add(bot);
+            if (loadout != null)
+            {
+                AdimiToolsAiLoadout.Attach(bot, loadout);
+            }
+
             if (bot.MountAgent != null)
             {
                 arena.Mounts.Add(bot.MountAgent);
             }
 
             float healthMultiplier = arena.Enhanced ? AdimiToolsAiArenaDifficulty.EnhancedHealthMultiplier : 1f;
-            bot.HealthLimit = arena.HardProfile?.HealthLimit ?? arena.HealthLimit * healthMultiplier;
-            bot.BaseHealthLimit = arena.HardProfile?.BaseHealthLimit ?? arena.BaseHealthLimit * healthMultiplier;
+            bot.HealthLimit = loadout?.Health * healthMultiplier ?? ranged?.HealthLimit ?? spear?.HealthLimit ?? arena.HardProfile?.HealthLimit ?? arena.HealthLimit * healthMultiplier;
+            bot.BaseHealthLimit = loadout?.BaseHealth * healthMultiplier ?? ranged?.BaseHealthLimit ?? spear?.BaseHealthLimit ?? arena.HardProfile?.BaseHealthLimit ?? arena.BaseHealthLimit * healthMultiplier;
             bot.Health = bot.HealthLimit;
             // MP armor bonuses normally come from a player's MissionPeer. These
             // independent bots must not claim that peer just to obtain armor.
-            bot.AgentDrivenProperties.ArmorHead = arena.HardProfile?.ArmorHead ?? arena.ArmorHead;
-            bot.AgentDrivenProperties.ArmorTorso = arena.HardProfile?.ArmorTorso ?? arena.ArmorTorso;
-            bot.AgentDrivenProperties.ArmorArms = arena.HardProfile?.ArmorArms ?? arena.ArmorArms;
-            bot.AgentDrivenProperties.ArmorLegs = arena.HardProfile?.ArmorLegs ?? arena.ArmorLegs;
+            float? armor = loadout?.Armor;
+            if (armor.HasValue && arena.HardProfile != null)
+            {
+                armor += armor > 50f ? 15f : 30f;
+            }
+
+            bot.AgentDrivenProperties.ArmorHead = armor ?? ranged?.ArmorHead ?? spear?.ArmorHead ?? arena.HardProfile?.ArmorHead ?? arena.ArmorHead;
+            bot.AgentDrivenProperties.ArmorTorso = armor ?? ranged?.ArmorTorso ?? spear?.ArmorTorso ?? arena.HardProfile?.ArmorTorso ?? arena.ArmorTorso;
+            bot.AgentDrivenProperties.ArmorArms = armor ?? ranged?.ArmorArms ?? spear?.ArmorArms ?? arena.HardProfile?.ArmorArms ?? arena.ArmorArms;
+            bot.AgentDrivenProperties.ArmorLegs = armor ?? ranged?.ArmorLegs ?? spear?.ArmorLegs ?? arena.HardProfile?.ArmorLegs ?? arena.ArmorLegs;
             bot.UpdateCustomDrivenProperties();
             bot.WieldInitialWeapons();
+            if (loadout?.Perks.Count > 0)
+            {
+                bot.UpdateAgentProperties();
+            }
+
             bot.SetWatchState(Agent.WatchState.Alarmed);
             bot.SetAutomaticTargetSelection(false);
             bot.SetTargetAgent(activate ? ownerAgent : null!);
@@ -1627,7 +2056,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         _duelMode?.RecordAiChallengeDisplayRound(arena.Id, playerWon);
         if (finished)
         {
-            ResetArena(arena, $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，{(arena.Series.WinnerPlayer == true ? "你获胜" : "AI 获胜")}。阻挡物将在 1 秒后开始复位，AI 在 3 秒后清理。");
+            string? resultMessage = arena.Series.WinnerPlayer == true ? null
+                : arena.IsCoop ? "组队 AI 挑战结束：玩家全部阵亡，AI 获胜。"
+                : $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，AI 获胜。阻挡物将在 1 秒后开始复位，AI 在 3 秒后清理。";
+            ResetArena(arena, resultMessage);
             return;
         }
 
@@ -1644,7 +2076,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             PreparePendingRound(arena, arena.Session.Owner!, arena.OwnerAgent!, now);
             return;
         }
-        else if (IsLivingAgent(arena.OwnerMount) && arena.OwnerMount!.Team == arena.PlayerTeam)
+        else if (CanRestoreOwnerMountTeam(arena, arena.OwnerMount) && arena.OwnerMount!.Team == arena.PlayerTeam)
         {
             // An original player horse may outlive its rider. It is not an AI
             // cleanup target and must retain its original ownership relation.
@@ -1685,7 +2117,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
             else if (arena.Bots.Count == 0)
             {
-                mount.FadeOut(hideInstantly: true, hideMount: false);
+                CleanupTrackedMount(mount);
                 arena.Mounts.Remove(mount);
             }
         }
@@ -1696,7 +2128,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 if (IsLivingAgent(mount))
                 {
-                    mount.FadeOut(hideInstantly: true, hideMount: false);
+                    CleanupTrackedMount(mount);
                 }
 
                 arena.RespawnedPlayerMounts.Remove(mount);
@@ -1708,7 +2140,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private bool PreparePlayerRespawnFrame(Arena arena)
     {
-        if (!PrepareSpawnPositions(arena, arena.OwnerAgent!))
+        if (!PrepareSpawnPositions(arena, forPlayerRespawn: true))
         {
             return false;
         }
@@ -1731,7 +2163,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         PrepareRoundSurvivors(arena);
         if (arena.Bots.Count == 0)
         {
-            if (!PrepareSpawnPositions(arena, ownerAgent))
+            if (!PrepareSpawnPositions(arena))
             {
                 ResetArena(arena, "下一局缺少可用 AI 出生位置，本系列已取消。");
                 return false;
@@ -1789,7 +2221,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         Notify(owner, $"本局开始：你 {arena.Series!.PlayerWins}:{arena.Series.AiWins} AI（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。");
     }
 
-    private bool PrepareSpawnPositions(Arena arena, Agent owner)
+    private bool PrepareSpawnPositions(Arena arena, bool forPlayerRespawn = false)
     {
         arena.SpawnPositions.Clear();
         MatrixFrame frame = arena.Spawn.GetGlobalFrame();
@@ -1800,8 +2232,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         Vec2 right = new(forward.y, -forward.x);
-        Equipment botEquipment = arena.HardProfile?.Equipment ?? arena.Equipment!;
-        float spacing = botEquipment[EquipmentIndex.Horse].IsEmpty ? 1.6f : 3f;
+        Equipment? equipment = forPlayerRespawn ? arena.Equipment
+            : arena.BotLoadouts?.FirstOrDefault()?.Equipment ?? arena.RangedProfile?.Equipment ?? arena.HardProfile?.Equipment ?? arena.Equipment;
+        bool mounted = equipment != null && !equipment[EquipmentIndex.Horse].IsEmpty
+            && (forPlayerRespawn || arena.SpearCandidates == null);
+        float spacing = mounted ? 3f : 1.6f;
+        int requiredCount = forPlayerRespawn ? 1 : arena.Session.RequestedCount;
         Vec3[] occupiedPositions = Mission.Agents.Where(IsLivingAgent).Select(agent => agent.Position).ToArray();
         var offsets = from x in Enumerable.Range(-4, 9)
                        from y in Enumerable.Range(-4, 9)
@@ -1826,7 +2262,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             arena.SpawnPositions.Add(ground);
-            if (arena.SpawnPositions.Count == arena.Session.RequestedCount)
+            if (arena.SpawnPositions.Count == requiredCount)
             {
                 return true;
             }
@@ -1883,7 +2319,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             MissionPeer? peer = networkPeer.GetComponent<MissionPeer>();
             Agent? agent = peer?.ControlledAgent;
-            if (peer == null || ReferenceEquals(peer, owner) || !networkPeer.IsSynchronized || !networkPeer.IsConnectionActive
+            if (peer == null || ReferenceEquals(peer, owner) || arena.HasCoopMember(peer)
+                || !networkPeer.IsSynchronized || !networkPeer.IsConnectionActive
                 || agent == null || !IsLivingAgent(agent) || !agent.IsHuman
                 || !arena.Area.IsPointIn(GetPlayerGroundFrame(agent).origin))
             {
@@ -1920,12 +2357,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         return true;
     }
 
-    private bool EvictOtherPlayers(Arena arena, MissionPeer owner)
+    private bool EvictOtherPlayers(Arena arena, MissionPeer owner, IReadOnlyList<Agent> fighters)
     {
-        Agent? ownerAgent = arena.OwnerAgent;
         Agent[] bots = arena.Bots.Where(IsLivingAgent).ToArray();
         if (arena.Area == null || arena.Session.State != AdimiToolsAiArenaState.Running
-            || arena.RoundPending || !IsLivingAgent(ownerAgent) || bots.Length == 0)
+            || arena.RoundPending || bots.Length == 0)
         {
             return true;
         }
@@ -1934,14 +2370,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             MissionPeer? peer = networkPeer.GetComponent<MissionPeer>();
             Agent? agent = peer?.ControlledAgent;
-            if (peer == null || ReferenceEquals(peer, owner) || !networkPeer.IsSynchronized || !networkPeer.IsConnectionActive
+            if (peer == null || (ReferenceEquals(peer, owner) && !arena.OwnerWithdrew)
+                || arena.CoopMembers.Any(member => !member.Withdrew && ReferenceEquals(peer, member.Peer))
+                || !networkPeer.IsSynchronized || !networkPeer.IsConnectionActive
                 || agent == null || !IsLivingAgent(agent) || !agent.IsHuman)
             {
                 continue;
             }
 
-            float distanceSquared = bots.Select(bot => bot.Position.DistanceSquared(agent.Position))
-                .Append(ownerAgent!.Position.DistanceSquared(agent.Position)).Min();
+            float distanceSquared = bots.Concat(fighters).Min(combatant => combatant.Position.DistanceSquared(agent.Position));
             if (distanceSquared >= AdimiToolsDuelInterference.WarningDistance * AdimiToolsDuelInterference.WarningDistance)
             {
                 continue;
@@ -1958,7 +2395,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 continue;
             }
 
-            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer)
+            if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || (IsPeerReserved(peer) && !ReferenceEquals(peer, owner) && !arena.HasCoopMember(peer))
                 || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true)
             {
                 // Never teleport somebody out of another live PvP/AI match.
@@ -2016,17 +2453,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private void FadeArenaActor(Agent actor)
     {
-        if (!IsAgentPresent(actor) || actor.State == AgentState.Deleted || actor.IsFadingOut())
+        if (!IsAgentPresent(actor) || actor.IsFadingOut())
         {
             return;
         }
 
-        Agent? rider = actor.IsMount ? actor.RiderAgent : null;
-        if (IsLivingAgent(rider) && rider!.MissionPeer != null)
+        if (actor.IsMount && !AdimiToolsMountSafety.CanFade(Mission, actor))
         {
-            // A human may mount a surviving AI horse during the exit delay.
-            // Never remove an occupied player mount from underneath its rider.
-            actor.SetTeam(rider.Team, sync: true);
+            // Any living rider can have taken this cached horse. Ownership
+            // uncertainty must not delete it or overwrite its current team.
             return;
         }
 
@@ -2038,9 +2473,83 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
     }
 
+    private void CleanupTrackedMount(Agent mount)
+    {
+        if (IsAgentPresent(mount) && !mount.IsFadingOut())
+        {
+            if (!AdimiToolsMountSafety.TryGetCurrentRider(Mission, mount, out Agent? rider))
+            {
+                if (!_ending)
+                {
+                    _deferredMountCleanup.Add(mount);
+                }
+
+                return;
+            }
+
+            if (rider == null && (IsLivingAgent(mount)
+                || Mission.GetMissionBehavior<MissionLobbyComponent>() is IAdimiToolsSingleRemovalLobby))
+            {
+                mount.FadeOut(hideInstantly: true, hideMount: false);
+            }
+        }
+
+        _deferredMountCleanup.Remove(mount);
+    }
+
+    private void CleanupCoopMember(Arena arena, CoopMember member, List<Exception> failures)
+    {
+        if (arena.PlayerTeam != null && member.Peer.Team == arena.PlayerTeam)
+        {
+            AttemptCleanup(() => member.Peer.Team = member.OriginalTeam, failures);
+        }
+
+        bool controlsMember = IsLivingAgent(member.Agent) && ReferenceEquals(member.Peer.ControlledAgent, member.Agent);
+        if (controlsMember && member.Agent.Team == arena.PlayerTeam)
+        {
+            AttemptCleanup(() => member.Agent.SetTeam(member.OriginalTeam, sync: true), failures);
+        }
+
+        if (controlsMember)
+        {
+            AttemptCleanup(() => SyncCurrentMountTeam(arena, member.Agent, member.Mount), failures);
+        }
+
+        if (member.OriginalMountTeam != null && CanRestoreMountTeam(member.Agent, member.Mount)
+            && member.Mount!.Team == arena.PlayerTeam)
+        {
+            AttemptCleanup(() => member.Mount.SetTeam(member.OriginalMountTeam, sync: true), failures);
+        }
+
+        if (_ending || _sceneClearing || member.Withdrew || arena.Series?.IsComplete != true
+            || member.Peer.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true })
+        {
+            return;
+        }
+
+        if (controlsMember && !member.Recovered)
+        {
+            AttemptCleanup(() =>
+            {
+                AdimiToolsMissionMultiplayerDuel.RestoreAgentForAiChallenge(member.Agent);
+                member.Recovered = true;
+            }, failures);
+        }
+
+        if (!member.ScoreSettled)
+        {
+            AttemptCleanup(() =>
+            {
+                (_duelMode ?? throw new InvalidOperationException("AI result requires the duel game mode."))
+                    .RecordAiChallengeResult(member.Peer, arena.Series.WinnerPlayer == true);
+                member.ScoreSettled = true;
+            }, failures);
+        }
+    }
+
     private void ResetArena(Arena arena, string? message, bool immediately = false)
     {
-        if (arena.Resetting || (arena.Shared != null && !arena.Shared.Owns(arena)))
+        if (arena.Resetting || arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena)))
         {
             return;
         }
@@ -2061,7 +2570,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         bool clearAi = !delayCompleted || Mission.CurrentTime >= arena.CompletionStartedAt!.Value + CompletedAiCleanupDelay;
         bool openBarrier = !delayCompleted || Mission.CurrentTime >= arena.CompletionStartedAt!.Value + CompletedBarrierOpenDelay;
-        bool recoverCompleted = !arena.CompletionRecoveryStarted && arena.Series?.IsComplete == true
+        bool recoverCompleted = !arena.CompletionRecoveryStarted && !arena.OwnerWithdrew && arena.Series?.IsComplete == true
             && !_ending && !_sceneClearing && ownerNetwork != null && ownerNetwork.IsConnectionActive && ownerNetwork.IsSynchronized;
         arena.CleanupOwner = owner;
         arena.Session.Reset();
@@ -2103,7 +2612,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         return;
                     }
 
-                    FadeArenaActor(mount);
+                    CleanupTrackedMount(mount);
                     arena.Mounts.Remove(mount);
                 }, failures);
             }
@@ -2121,11 +2630,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     AttemptCleanup(() => arena.OwnerAgent.SetTeam(team, sync: true), failures);
                 }
+
+                if (ReferenceEquals(owner.ControlledAgent, arena.OwnerAgent) && IsLivingAgent(arena.OwnerAgent))
+                {
+                    AttemptCleanup(() => SyncCurrentMountTeam(arena, arena.OwnerAgent!, arena.OwnerMount), failures);
+                }
             }
 
-            if (IsLivingAgent(arena.OwnerMount) && arena.OwnerMount!.Team == arena.PlayerTeam)
+            if (CanRestoreOwnerMountTeam(arena, arena.OwnerMount) && arena.OwnerMount!.Team == arena.PlayerTeam)
             {
                 AttemptCleanup(() => arena.OwnerMount.SetTeam(arena.OriginalMountTeam!, sync: true), failures);
+            }
+
+            foreach (CoopMember member in arena.CoopMembers)
+            {
+                CleanupCoopMember(arena, member, failures);
             }
 
             foreach (Agent mount in arena.RespawnedPlayerMounts.ToArray())
@@ -2134,11 +2653,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     if (IsLivingAgent(mount))
                     {
-                        if (IsLivingAgent(arena.OwnerAgent) && ReferenceEquals(arena.OwnerAgent!.MountAgent, mount))
+                        if (!AdimiToolsMountSafety.TryGetCurrentRider(Mission, mount, out Agent? rider))
+                        {
+                            if (!_ending)
+                            {
+                                _deferredMountCleanup.Add(mount);
+                            }
+                        }
+                        else if (rider != null && ReferenceEquals(rider, arena.OwnerAgent))
                         {
                             mount.SetTeam(arena.OriginalTeam ?? Mission.AttackerTeam, sync: true);
                         }
-                        else
+                        else if (rider == null && AdimiToolsMountSafety.CanFade(Mission, mount))
                         {
                             mount.FadeOut(hideInstantly: true, hideMount: false);
                         }
@@ -2157,7 +2683,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }, failures);
             }
 
-            if (!arena.ScoreSettled && arena.Series?.IsComplete == true && owner != null
+            if (!arena.ScoreSettled && !arena.OwnerWithdrew && arena.Series?.IsComplete == true && owner != null
                 && !_ending && !_sceneClearing && ownerNetwork?.IsConnectionActive == true && ownerNetwork.IsSynchronized)
             {
                 AttemptCleanup(() =>
@@ -2165,7 +2691,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     int gainedScore = (_duelMode ?? throw new InvalidOperationException("AI result requires the duel game mode."))
                         .RecordAiChallengeResult(owner, arena.Series.WinnerPlayer == true);
                     arena.ScoreSettled = true;
-                    AdimiToolsConsoleLog.Log($"AI result: playerId={owner.Peer.Id}, group={arena.Id}, aiCount={arena.StartedAiCount}, difficulty={arena.Difficulty}, enhanced={arena.Enhanced}, ft={arena.Series.FirstToLimit}, playerRounds={arena.Series.PlayerWins}, aiRounds={arena.Series.AiWins}, won={arena.Series.WinnerPlayer == true}, scoreGain={gainedScore}.");
+                    AdimiToolsConsoleLog.Log($"AI result: playerId={owner.Peer.Id}, group={arena.Label}, aiCount={arena.StartedAiCount}, difficulty={arena.Difficulty}, enhanced={arena.Enhanced}, ft={arena.Series.FirstToLimit}, playerRounds={arena.Series.PlayerWins}, aiRounds={arena.Series.AiWins}, won={arena.Series.WinnerPlayer == true}, scoreGain={gainedScore}.");
                 }, failures);
             }
 
@@ -2184,17 +2710,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }, failures);
             }
 
-            if (owner != null && message != null)
+            if (message != null)
             {
-                try
+                foreach (MissionPeer recipient in arena.CoopMembers.Select(member => member.Peer).Prepend(owner).OfType<MissionPeer>())
                 {
-                    Notify(owner, message);
-                }
-                catch (Exception exception)
-                {
-                    // A failed informational message must not retain a clean
-                    // arena or keep its human owner reserved indefinitely.
-                    AdimiToolsConsoleLog.Log($"AI group {arena.Id} notification failed: {exception}");
+                    Notify(recipient, message);
                 }
             }
         }
@@ -2212,12 +2732,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             if (failures.Count != 0)
             {
                 arena.Failed = true;
-                AdimiToolsConsoleLog.Log($"AI group {arena.Id} cleanup will retry: {new AggregateException(failures)}");
+                AdimiToolsConsoleLog.Log($"AI group {arena.Label} cleanup will retry: {new AggregateException(failures)}");
             }
             else if (!completionWaiting)
             {
                 arena.CleanupOwner = null;
                 arena.OwnerAgent = null;
+                arena.CoopMembers.Clear();
+                arena.RecentBotHits.Clear();
+                arena.OwnerWithdrew = false;
                 arena.OwnerMount = null;
                 arena.OriginalMountTeam = null;
                 arena.MountKey = null;
@@ -2228,6 +2751,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.Banner = null;
                 arena.Difficulty = AdimiToolsAiArenaDifficulty.Simple;
                 arena.HardProfile = null;
+                arena.SpearCandidates = null;
+                arena.SpearProfiles.Clear();
+                arena.RangedCandidates = null;
+                arena.RangedProfile = null;
+                arena.BotLoadouts = null;
                 arena.Series = null;
                 arena.RoundPending = false;
                 arena.AwaitingRespawn = false;
@@ -2251,7 +2779,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private void FailArena(Arena arena, Exception exception)
     {
-        AdimiToolsConsoleLog.Log($"AI group {arena.Id} disabled after error: {exception}");
+        AdimiToolsConsoleLog.Log($"AI group {arena.Label} disabled after error: {exception}");
         arena.Failed = true;
         try
         {
@@ -2259,7 +2787,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
         catch (Exception cleanupException)
         {
-            AdimiToolsConsoleLog.Log($"AI group {arena.Id} cleanup failed: {cleanupException}");
+            AdimiToolsConsoleLog.Log($"AI group {arena.Label} cleanup failed: {cleanupException}");
         }
     }
 
@@ -2267,6 +2795,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         _completionRespawns.Clear();
         _nextInterferenceWarningAt.Clear();
+        _deferredMountCleanup.Clear();
         if (_ending)
         {
             return;
@@ -2281,7 +2810,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
             catch (Exception exception)
             {
-                AdimiToolsConsoleLog.Log($"AI group {arena.Id} mission cleanup failed: {exception}");
+                AdimiToolsConsoleLog.Log($"AI group {arena.Label} mission cleanup failed: {exception}");
             }
             finally
             {

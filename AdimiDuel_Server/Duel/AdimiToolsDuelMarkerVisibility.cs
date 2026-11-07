@@ -4,8 +4,8 @@ namespace AdimiDuel_Server.Duel;
 internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
     where TPeer : notnull
 {
-    public const float RestoreDistance = 50f;
-    public const float HideDistance = 55f;
+    public const float RestoreDistance = 75f;
+    public const float HideDistance = 80f;
     public const int MaximumChangesPerBatch = 8;
 
     private readonly Dictionary<TPeer, HashSet<TPeer>> _hidden = new();
