@@ -1,4 +1,4 @@
-385
+394
 flora_entity flora_dry_plant_h
 flora_entity flora_dry_plant_j
 flora_entity flora_grass_a_non_shadow
@@ -12,11 +12,13 @@ mesh battania_castle_keep_wood_stake_a
 mesh bd_aserai_pot_cupper_a
 mesh bd_barrel_a
 mesh bd_pole_6m
+mesh bd_sturgia_statue
 mesh bd_table_d
 mesh bd_wood_heap_b
 mesh cave_rock_wall_a
 mesh cave_rock_wall_b
 mesh civilian_ladder_5m
+mesh crowd_man_b
 mesh debug_lod_mesh
 mesh editor_plane_low
 mesh empire_castle_wall_d_l3
@@ -43,7 +45,6 @@ mesh european_sally_door_a_state4
 mesh generic_flag_pole_a
 mesh heater_shield_k
 mesh icon_man
-mesh item_highlight_cylinder
 mesh sally_door_a
 mesh siege_barricade_c
 mesh sturgia_shield_a
@@ -60,7 +61,6 @@ mesh wooden_platform_2_plank_b
 mesh wooden_platform_2_stairs_a
 prefab __empty_object
 prefab _barrier_04x04m
-prefab _barrier_12x04m
 prefab _barrier_16x04m
 prefab _to_carry_bd_basket_a
 prefab _to_carry_bd_basket_prefab_test
@@ -72,6 +72,8 @@ prefab arabian_platform_wooden_c
 prefab archery_target
 prefab attacker_spawn_visual
 prefab battania_castle_keep_wood_stake_a
+prefab battania_castle_keep_wood_stake_c
+prefab battania_castle_stairs_a_l1_stairs
 prefab battania_castle_wall_a_l2
 prefab battania_castle_wall_d_l2
 prefab battania_stone_c
@@ -117,7 +119,6 @@ prefab bd_floor_stone_a
 prefab bd_hay_cart_a
 prefab bd_hay_cart_b
 prefab bd_heap_b
-prefab bd_heap_d
 prefab bd_heap_e
 prefab bd_ladder_a
 prefab bd_log_and_axe
@@ -171,6 +172,7 @@ prefab burning_campfire
 prefab campfire
 prefab campfire_light
 prefab capture_flag_a
+prefab castle_plank_wall_a
 prefab castle_plank_wall_c
 prefab chair_sit_position_front_left
 prefab chair_sit_position_front_right
@@ -239,6 +241,8 @@ prefab empire_village_house_c_stairs
 prefab empire_village_house_door_a
 prefab empire_wall_tower_a_corner
 prefab envmap_prop
+prefab european_castle_stairs_a_l1
+prefab european_castle_stairs_b_l1
 prefab european_castle_wall_a_damaged_heap_c
 prefab european_castle_wall_a_damaged_heap_d
 prefab european_castle_wall_a_damaged_heap_e
@@ -253,6 +257,8 @@ prefab flame_loop
 prefab flame_loop_haze
 prefab floorstone_a
 prefab foods_basket_c
+prefab highlight_pointer_glow_beam
+prefab highlight_pointer_glow_ground
 prefab khuzait_platform_wooden_a
 prefab light
 prefab merchandise_cloth_a
@@ -287,7 +293,10 @@ prefab scene: empire_house_b_interior
 prefab shield
 prefab shop_sign_base_a2
 prefab shop_sign_base_a3
+prefab shop_sign_base_b1
+prefab shop_sign_base_b2
 prefab shop_sign_merchanthorse
+prefab shop_sign_merchantweapons_melee
 prefab shop_sign_merchantweapons_ranged
 prefab siege_barricade_c
 prefab smoked_fire_with_light
@@ -318,11 +327,11 @@ prefab village_tent_c
 prefab vlandia_arena_wall_a
 prefab vlandia_arena_wall_b
 prefab vlandia_arena_wall_c
-prefab vlandia_dungeon_door_b_closed
 prefab vlandia_grandbazaar_big_wall_b
 prefab volume_box
 prefab waterfall_a_single
 prefab waterfall_splash_2
+prefab wooden_platform_2_a
 prefab wooden_platform_2_c
 prefab wooden_platform_2_plank_b
 prefab wooden_platform_2_plank_f_column
