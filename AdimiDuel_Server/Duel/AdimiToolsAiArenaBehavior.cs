@@ -54,8 +54,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public VolumeBox? Area { get; init; }
         public AdimiToolsSharedArena? Shared { get; init; }
         public AdimiToolsSharedArena? DuelBoundary { get; init; }
-        public AdimiToolsArenaGlowGroup Glows { get; init; } = null!;
-        public bool GlowsHidden { get; set; }
         public AdimiToolsAiArenaSession<MissionPeer> Session { get; } = new();
         public AdimiToolsAiArenaNavigationGuard NavigationGuard { get; } = new();
         public Agent? OwnerAgent { get; set; }
@@ -493,8 +491,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             if (result == AdimiToolsAiArenaHitResult.Reserved)
             {
-                arena.GlowsHidden = false;
-                arena.Glows.Update(false, now);
                 _duelMode?.CancelIncomingDuelRequestsForAiChallenge(peer);
                 foreach (MissionPeer teammate in teammates)
                 {
@@ -601,34 +597,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         foreach (Arena arena in _arenas.Values)
         {
-            if (arena.DuelBoundary?.IsOwnedByOther(arena) == true)
+            if (arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena)))
             {
-                continue;
-            }
-
-            if (arena.Shared != null && !arena.Shared.Owns(arena))
-            {
-                if (!arena.Shared.IsOwnedByOther(arena))
-                {
-                    // A free shared arena must confirm its idle decorations
-                    // even before the first AI or player match acquires it.
-                    arena.Glows.Update(false, now);
-                }
-
                 continue;
             }
 
             try
             {
                 UpdateBarrierMovement(arena, now);
-                if (arena.GlowsHidden && !arena.Session.IsReserved && !arena.CleanupPending
-                    && !arena.AreaCleanupPending && now >= arena.LoweringUntil
-                    && arena.Shared == null)
-                {
-                    arena.GlowsHidden = false;
-                }
-
-                arena.Glows.Update(arena.GlowsHidden, now);
                 ReleaseSharedIfClean(arena, now);
             }
             catch (Exception exception)
@@ -881,11 +857,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         _sceneClearing = true;
         _completionRespawns.Clear();
         _nextInterferenceWarningAt.Clear();
-        foreach (Arena arena in _arenas.Values)
-        {
-            arena.Glows.RestoreAndForget(Mission.CurrentTime);
-        }
-
         CleanupAll();
         foreach (Arena arena in _arenas.Values)
         {
@@ -1401,8 +1372,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         if (CanReleaseShared(arena, now) && TryAreaCleanup(arena))
         {
-            arena.GlowsHidden = false;
-            arena.Glows.Update(false, now);
             arena.Shared!.Release(arena);
         }
     }
@@ -1606,7 +1575,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 Area = area,
                 Shared = area != null && areas[0].HasTag("adimi_team_area") ? AdimiToolsSharedArena.For(Mission, area) : null,
                 DuelBoundary = area != null ? AdimiToolsSharedArena.For(Mission, area) : null,
-                Glows = AdimiToolsArenaGlowGroup.Create(Mission.Scene, areas.Count == 0 ? null : areas[0]),
             };
             try
             {
@@ -1926,8 +1894,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         PrepareRoundOwner(arena, ownerAgent);
         SpawnRoundBots(arena, ownerAgent);
-        arena.GlowsHidden = true;
-        arena.Glows.Update(true, now);
         _duelMode?.BeginAiChallengeDisplay(arena.Id, owner, ownerAgent, arena.StartedAiCount, arena.Difficulty,
             arena.SpearCandidates != null ? "持矛步兵" : arena.RangedProfile?.TroopName ?? arena.HardProfile?.TroopName);
         string opponents = arena.Kind switch
@@ -2058,7 +2024,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             string? resultMessage = arena.Series.WinnerPlayer == true ? null
                 : arena.IsCoop ? "组队 AI 挑战结束：玩家全部阵亡，AI 获胜。"
-                : $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，AI 获胜。阻挡物将在 1 秒后开始复位，AI 在 3 秒后清理。";
+                : $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，AI 获胜。";
             ResetArena(arena, resultMessage);
             return;
         }
@@ -2766,11 +2732,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.NextRoundAt = 0d;
                 arena.RespawnDeadline = 0d;
                 arena.SpawnPositions.Clear();
-                if (!arena.AreaCleanupPending && Mission.CurrentTime >= arena.LoweringUntil && arena.Shared == null)
-                {
-                    arena.GlowsHidden = false;
-                    arena.Glows.Update(false, Mission.CurrentTime);
-                }
             }
 
             arena.Resetting = false;
@@ -2814,15 +2775,6 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
             finally
             {
-                if (!_sceneClearing)
-                {
-                    arena.Glows.RestoreAndForget(Mission.CurrentTime);
-                }
-                else
-                {
-                    arena.Glows.Forget();
-                }
-
                 if (CanReleaseShared(arena, Mission.CurrentTime))
                 {
                     arena.Shared?.Release(arena);

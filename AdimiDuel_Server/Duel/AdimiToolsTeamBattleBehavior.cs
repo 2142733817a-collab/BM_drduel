@@ -53,8 +53,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         public VolumeBox Area { get; init; } = null!;
         public AdimiToolsSharedArena? Shared { get; init; }
         public AdimiToolsSharedArena? DuelBoundary { get; init; }
-        public AdimiToolsArenaGlowGroup Glows { get; init; } = null!;
-        public bool GlowsHidden { get; set; }
         public List<AdimiToolsTeamBattleBarrier> Barriers { get; init; } = new();
         public AdimiToolsTeamBattleReadiness<Agent> Readiness { get; } = new(ReferenceEqualityComparer.Instance);
         public Dictionary<MissionPeer, Member> Members { get; } = new();
@@ -218,7 +216,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 continue;
             }
 
-            arena.Glows.Update(arena.GlowsHidden, now);
             try
             {
                 var frameErrors = new List<Exception>();
@@ -267,8 +264,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                     else if (BoundaryAtTarget(arena, raised: true))
                     {
                         arena.Readiness.Start();
-                        arena.GlowsHidden = true;
-                        arena.Glows.Update(true, now);
                         SetEnemies(arena, true);
                         Announce(arena, $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。");
                     }
@@ -336,11 +331,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     public override void OnClearScene()
     {
-        foreach (Arena arena in _arenas)
-        {
-            arena.Glows.RestoreAndForget(Mission.CurrentTime);
-        }
-
         Stop(sceneClearing: true);
         base.OnClearScene();
     }
@@ -353,11 +343,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         if (Mission.IsFinalized)
         {
             _stopped = true;
-            foreach (Arena arena in _arenas)
-            {
-                arena.Glows.Forget();
-            }
-
             _arenas.Clear();
             _duelMode = null;
             base.OnRemoveBehavior();
@@ -1158,8 +1143,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         QueueCompletedInfantryRespawns(arena);
         arena.NormalCompletion = false;
         arena.Members.Clear();
-        arena.GlowsHidden = false;
-        arena.Glows.Update(false, now);
         arena.Candidates.Clear();
         arena.Series = null;
         arena.NextRoundAt = null;
@@ -1567,7 +1550,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                     Id = area.Id, SideA = sideA, SideB = sideB, Area = area.Box,
                     Shared = area.Shared,
                     DuelBoundary = duelBoundary,
-                    Glows = AdimiToolsArenaGlowGroup.Create(Mission.Scene, area.Entity),
                     Barriers = barriers,
                 };
                 duelBoundary.RegisterBoundary(arena, isAi: false, roots,
@@ -1616,7 +1598,6 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         foreach (Arena arena in _arenas)
         {
             bool recoveryFailed = false;
-            arena.Glows.RestoreAndForget(Mission.CurrentTime);
             try
             {
                 SetEnemies(arena, false);
