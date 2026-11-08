@@ -32,6 +32,8 @@ internal class AdimiToolsDuelGameMode : MissionBasedMultiplayerGameMode
                     new AdimiToolsAiArenaBehavior(),
                     new AdimiToolsCultureSelectionBehavior(),
                     new AdimiToolsTeamBattleBehavior(),
+                    new AdimiToolsTeamOrbSync(),
+                    new AdimiToolsArenaDecalVisibility(),
                     new AdimiToolsDuelGuidanceBehavior(),
                     new MissionMultiplayerGameModeDuelClient(),
                     new MultiplayerTimerComponent(),

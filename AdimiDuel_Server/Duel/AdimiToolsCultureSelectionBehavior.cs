@@ -143,13 +143,14 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         }
 
         _pending[peer] = new PendingSwitch(agent, culture!, Mission.CurrentTime + 3d);
+        string countryName = AdimiToolsDuelGuidanceText.Highlight(GetCultureName(culture!));
         if (cycle)
         {
-            Notify(network, $"3秒后切换至{GetCultureName(culture!)}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
+            Notify(network, $"3秒后切换至{countryName}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
         }
         else
         {
-            Notify(network, $"3秒后切换至{GetCultureName(culture!)}。\n再次挥砍可重新选择并计时。", playSound: true);
+            Notify(network, $"3秒后切换至{countryName}。\n再次挥砍可重新选择并计时。", playSound: true);
         }
     }
 
@@ -174,7 +175,7 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
 
     private static void Notify(NetworkCommunicator peer, string message, bool playSound = false)
         => AdimiToolsNotifier.ServerSendGuidanceToPlayer(peer,
-            $"<span style=\"{AdimiToolsDuelGuidanceText.HighlightStyle}\">【阵营切换】</span>{message}", playSound);
+            $"<span style=\"{AdimiToolsDuelGuidanceText.HighlightStyle}\">【阵营切换】</span>\n{message}", playSound);
 
     // Dedicated servers can resolve culture.Name in English regardless of the
     // recipient's language. Keep the six stock countries Chinese in this log.
@@ -249,7 +250,7 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
             spawning.RequestClassSelection(peer);
         }
 
-        Notify(network, $"已切换至{GetCultureName(culture)}，请选择兵种并重生。");
+        Notify(network, $"已切换至{AdimiToolsDuelGuidanceText.Highlight(GetCultureName(culture))}，请选择兵种并重生。");
     }
 
     private void Initialize()

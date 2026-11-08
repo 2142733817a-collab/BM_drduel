@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Module>
+  <Name value="Adimi Duel Team Names" />
+  <Id value="AdimiDuelTeamNames" />
+  <Version value="v1.0.0" />
+  <DefaultModule value="false" />
+  <ModuleCategory value="MultiplayerOptional" />
+  <ModuleType value="Community" />
+  <DependedModules>
+    <DependedModule Id="Native" DependentVersion="v1.4.8" Optional="false" />
+    <DependedModule Id="Multiplayer" DependentVersion="v1.4.8" Optional="false" />
+  </DependedModules>
+  <SubModules>
+    <SubModule>
+      <Name value="Adimi Duel Team Names" />
+      <DLLName value="AdimiDuelTeamNames.dll" />
+      <SubModuleClassType value="AdimiDuelTeamNames.TeamNamesSubModule" />
+      <Tags>
+        <Tag key="DedicatedServerType" value="none" />
+      </Tags>
+    </SubModule>
+  </SubModules>
+</Module>

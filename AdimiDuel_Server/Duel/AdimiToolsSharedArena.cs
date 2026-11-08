@@ -77,6 +77,8 @@ internal sealed class AdimiToolsSharedArena
 
     public bool ContainsPoint(Vec3 point) => _area.IsPointIn(point);
 
+    public bool IsForArea(VolumeBox area) => ReferenceEquals(_area, area);
+
     public bool TryAcquire(object owner)
     {
         ArgumentNullException.ThrowIfNull(owner);

@@ -60,6 +60,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         public Team? TeamA { get; set; }
         public Team? TeamB { get; set; }
         public AdimiToolsTeamBattleSeries? Series { get; set; }
+        public bool FriendlyFireEnabled { get; set; }
+        public double NextFriendlyFireToggleAt { get; set; }
         public bool NormalCompletion { get; set; }
         public double? NextRoundAt { get; set; }
         public double RespawnDeadline { get; set; }
@@ -180,6 +182,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     public bool IsPositionInActiveArena(Vec3 position) => !_stopped && _arenas.Any(arena => arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing && arena.Area.IsPointIn(position));
 
+    public bool IsFightingIn(VolumeBox area)
+        => !_stopped && _arenas.Any(arena => ReferenceEquals(arena.Area, area)
+            && arena.Readiness.Phase is AdimiToolsTeamBattlePhase.Running or AdimiToolsTeamBattlePhase.RoundWaiting);
+
     public bool ShouldBlockDamage(Agent? attacker, Agent? victim)
     {
         if (_stopped || attacker == null || victim == null || ReferenceEquals(attacker, victim))
@@ -196,7 +202,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         return a.arena == null || b.arena == null || !ReferenceEquals(a.arena, b.arena)
             || a.arena.Readiness.Phase != AdimiToolsTeamBattlePhase.Running
-            || a.member!.Eliminated || b.member!.Eliminated || a.member.SideA == b.member.SideA
+            || a.member!.Eliminated || b.member!.Eliminated
+            || (a.member.SideA == b.member.SideA && !a.arena.FriendlyFireEnabled)
             || !IsLiveMember(a.arena, a.member) || !IsLiveMember(b.arena, b.member);
     }
 
@@ -265,7 +272,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                     {
                         arena.Readiness.Start();
                         SetEnemies(arena, true);
-                        Announce(arena, $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。");
+                        string tk = arena.FriendlyFireEnabled ? "\n本场允许队友伤害。" : string.Empty;
+                        Announce(arena, $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。{tk}");
                     }
                 }
                 else if (!arena.Disabled)
@@ -353,6 +361,71 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         base.OnRemoveBehavior();
     }
 
+    internal Team? GetMarkerTeam(MissionPeer peer, bool combatOnly = false)
+    {
+        var (arena, member) = FindMember(peer);
+        if (arena == null || member == null || member.Withdrawn || member.Eliminated
+            || arena.Readiness.Phase is not (AdimiToolsTeamBattlePhase.Preparing
+                or AdimiToolsTeamBattlePhase.Running or AdimiToolsTeamBattlePhase.RoundWaiting)
+            || (combatOnly && arena.Readiness.Phase != AdimiToolsTeamBattlePhase.Running)
+            || !IsLiveMember(arena, member))
+        {
+            return null;
+        }
+
+        return member.SideA ? arena.TeamA : arena.TeamB;
+    }
+
+    internal IEnumerable<(Agent agent, bool hasBox)> GetOrbOpponents(MissionPeer peer)
+    {
+        var (arena, member) = FindMember(peer);
+        if (_stopped || arena == null || member == null || member.Withdrawn || member.Eliminated
+            || arena.Readiness.Phase != AdimiToolsTeamBattlePhase.Running || !IsLiveMember(arena, member))
+        {
+            yield break;
+        }
+
+        foreach (Member opponent in arena.Members.Values)
+        {
+            if (opponent.SideA != member.SideA && !opponent.Withdrawn && !opponent.Eliminated && IsLiveMember(arena, opponent))
+            {
+                yield return (opponent.Agent, true);
+            }
+        }
+    }
+
+    internal void OnFriendlyFireToggleHit(VolumeBox area, Agent attacker)
+    {
+        if (!GameNetwork.IsServer || _duelMode == null || !attacker.IsHuman || !IsLiving(attacker)
+            || attacker.MissionPeer is not MissionPeer peer || !ReferenceEquals(peer.ControlledAgent, attacker)
+            || peer.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true })
+        {
+            return;
+        }
+
+        Arena? arena = _arenas.FirstOrDefault(candidate => ReferenceEquals(candidate.Area, area));
+        if (arena == null || arena.Disabled || IsBusyElsewhere(peer, arena)
+            || arena.DuelBoundary?.IsOwnedByOther(arena) == true || Mission.CurrentTime < arena.NextFriendlyFireToggleAt)
+        {
+            return;
+        }
+
+        arena.NextFriendlyFireToggleAt = Mission.CurrentTime + 0.5d;
+        if (arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
+        {
+            Notify(peer, "本场名单已锁定，无法切换队友伤害。");
+            return;
+        }
+
+        arena.FriendlyFireEnabled = !arena.FriendlyFireEnabled;
+        var (sideA, sideB) = CollectReadyPlayers(arena);
+        string notice = arena.FriendlyFireEnabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。";
+        foreach (MissionPeer recipient in sideA.Concat(sideB).Select(agent => agent.MissionPeer!).Append(peer).Distinct())
+        {
+            Notify(recipient, notice);
+        }
+    }
+
     internal bool CanYieldAiReadiness(VolumeBox? area) => !_stopped && _arenas.Any(arena =>
         ReferenceEquals(arena.Area, area) && !arena.Disabled
         && arena.Readiness.Phase < AdimiToolsTeamBattlePhase.Preparing && arena.Shared?.Owns(arena) == true);
@@ -413,6 +486,13 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             var failures = new List<Exception>();
             Attempt(() => arena.TeamA.SetIsEnemyOf(arena.TeamB, active), failures);
             Attempt(() => arena.TeamB.SetIsEnemyOf(arena.TeamA, active), failures);
+            if (arena.FriendlyFireEnabled)
+            {
+                // Stock Duel uses self-hostility to allow hits within one team.
+                Attempt(() => arena.TeamA.SetIsEnemyOf(arena.TeamA, active), failures);
+                Attempt(() => arena.TeamB.SetIsEnemyOf(arena.TeamB, active), failures);
+            }
+
             if (failures.Count != 0)
             {
                 throw new AggregateException(failures);
@@ -576,7 +656,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         return owners.ToArray();
     }
 
-    private void TickWaiting(Arena arena, double now)
+    private (List<Agent> sideA, List<Agent> sideB) CollectReadyPlayers(Arena arena)
     {
         var a = new List<Agent>();
         var b = new List<Agent>();
@@ -603,6 +683,12 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             (inA ? a : b).Add(agent);
         }
 
+        return (a, b);
+    }
+
+    private void TickWaiting(Arena arena, double now)
+    {
+        var (a, b) = CollectReadyPlayers(arena);
         if (arena.Shared != null)
         {
             if (a.Count != 0 && b.Count != 0)
@@ -1145,6 +1231,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.Members.Clear();
         arena.Candidates.Clear();
         arena.Series = null;
+        arena.FriendlyFireEnabled = false;
+        arena.NextFriendlyFireToggleAt = 0d;
         arena.NextRoundAt = null;
         arena.RespawnDeadline = 0d;
         arena.NextRoundCleanupAt = 0d;
@@ -1588,6 +1676,33 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             catch (Exception exception)
             {
                 AdimiToolsConsoleLog.Log($"Team battle area {area.Id} disabled: {exception.Message}");
+            }
+        }
+
+        foreach (GameEntity selector in Mission.Scene.FindEntitiesWithTag(AdimiToolsTeamBattlePolicy.FriendlyFireToggle))
+        {
+            Arena[] matches = _arenas.Where(arena => arena.Area.IsPointIn(selector.GlobalPosition)).Take(2).ToArray();
+            if (matches.Length != 1 || selector.HasTag(AdimiToolsDuelModes.CycleTag))
+            {
+                AdimiToolsConsoleLog.Log($"Team TK selector '{selector.Name}' needs one arena and its own tag.");
+                continue;
+            }
+
+            try
+            {
+                if (selector.GetFirstScriptOfType<AdimiToolsTeamFriendlyFireTrigger>() == null)
+                {
+                    selector.CreateAndAddScriptComponent(nameof(AdimiToolsTeamFriendlyFireTrigger), callScriptCallbacks: true);
+                }
+
+                var trigger = selector.GetFirstScriptOfType<AdimiToolsTeamFriendlyFireTrigger>()
+                    ?? throw new InvalidOperationException("Server hit observer was not created.");
+                trigger.Bind(this, matches[0].Area);
+                AdimiToolsConsoleLog.Log($"Team TK selector '{selector.Name}' ready for arena {matches[0].Id}.");
+            }
+            catch (Exception exception)
+            {
+                AdimiToolsConsoleLog.Log($"Team TK selector '{selector.Name}' skipped: {exception.Message}");
             }
         }
     }

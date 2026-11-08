@@ -1,4 +1,4 @@
-394
+419
 flora_entity flora_dry_plant_h
 flora_entity flora_dry_plant_j
 flora_entity flora_grass_a_non_shadow
@@ -6,11 +6,13 @@ flora_entity flora_grass_b_non_shadow
 flora_entity flora_lavender_medium
 flora_entity free_flora_plant_g
 flora_entity ground_rock
+material emisive_sphere
 mesh arrow_new_icon
 mesh barrier
 mesh battania_castle_keep_wood_stake_a
 mesh bd_aserai_pot_cupper_a
 mesh bd_barrel_a
+mesh bd_battania_pot_on_trunk_b
 mesh bd_pole_6m
 mesh bd_sturgia_statue
 mesh bd_table_d
@@ -18,8 +20,8 @@ mesh bd_wood_heap_b
 mesh cave_rock_wall_a
 mesh cave_rock_wall_b
 mesh civilian_ladder_5m
-mesh crowd_man_b
 mesh debug_lod_mesh
+mesh deferred_lighting_sphere
 mesh editor_plane_low
 mesh empire_castle_wall_d_l3
 mesh empire_castle_wall_d_l3_01
@@ -49,6 +51,9 @@ mesh sally_door_a
 mesh siege_barricade_c
 mesh sturgia_shield_a
 mesh twohanded_training_sword
+mesh valley_mountain_a
+mesh valley_mountain_d
+mesh valley_mountain_e
 mesh viking_sword_h
 mesh vlandia_arena_wall_a
 mesh vlandia_grandbazaar_ground_a
@@ -72,7 +77,6 @@ prefab arabian_platform_wooden_c
 prefab archery_target
 prefab attacker_spawn_visual
 prefab battania_castle_keep_wood_stake_a
-prefab battania_castle_keep_wood_stake_c
 prefab battania_castle_stairs_a_l1_stairs
 prefab battania_castle_wall_a_l2
 prefab battania_castle_wall_d_l2
@@ -92,6 +96,7 @@ prefab bd_basket_aserai_d
 prefab bd_basket_aserai_e
 prefab bd_basket_heap_aserai_b
 prefab bd_battania_landmark_statue_b
+prefab bd_battania_statue_b
 prefab bd_broom_a
 prefab bd_bucket_a
 prefab bd_bucket_b
@@ -119,6 +124,7 @@ prefab bd_floor_stone_a
 prefab bd_hay_cart_a
 prefab bd_hay_cart_b
 prefab bd_heap_b
+prefab bd_heap_c
 prefab bd_heap_e
 prefab bd_ladder_a
 prefab bd_log_and_axe
@@ -157,6 +163,7 @@ prefab bd_tapestry_aserai_b
 prefab bd_tapestry_aserai_d
 prefab bd_tapestry_aserai_e
 prefab bd_tapestry_khuzait
+prefab bd_wall_bucket
 prefab bd_wall_decoration_weapons_a
 prefab bd_wall_pouches
 prefab bd_wall_pouches_b
@@ -174,6 +181,14 @@ prefab campfire_light
 prefab capture_flag_a
 prefab castle_plank_wall_a
 prefab castle_plank_wall_c
+prefab castle_scaffold_b
+prefab castle_scaffold_b_00
+prefab castle_scaffold_b_01
+prefab castle_scaffold_b_02
+prefab castle_scaffold_b_03
+prefab cave_rock_wall_a
+prefab cave_rock_wall_b
+prefab cave_rock_wall_d
 prefab chair_sit_position_front_left
 prefab chair_sit_position_front_right
 prefab civilian_ladder_5m
@@ -187,6 +202,8 @@ prefab crate_b
 prefab crate_b_empty
 prefab crate_b_lid
 prefab debris_holder
+prefab dry_tree_b
+prefab dry_tree_e
 prefab empire_castle_stairs_b_l3
 prefab empire_castle_stairs_c_l3
 prefab empire_castle_wall_d_l3
@@ -241,13 +258,18 @@ prefab empire_village_house_c_stairs
 prefab empire_village_house_door_a
 prefab empire_wall_tower_a_corner
 prefab envmap_prop
+prefab european_castle_corner_d_l1
 prefab european_castle_stairs_a_l1
-prefab european_castle_stairs_b_l1
 prefab european_castle_wall_a_damaged_heap_c
 prefab european_castle_wall_a_damaged_heap_d
 prefab european_castle_wall_a_damaged_heap_e
 prefab fence_empire_a
 prefab fence_empire_c
+prefab fish axe
+prefab fishnet_a
+prefab fishnet_b
+prefab fishnet_d
+prefab fishnet_e
 prefab flag_4
 prefab flag_pole_big_cloth
 prefab flag_raising_boundary
@@ -259,9 +281,12 @@ prefab floorstone_a
 prefab foods_basket_c
 prefab highlight_pointer_glow_beam
 prefab highlight_pointer_glow_ground
+prefab hut_b_fishing
 prefab khuzait_platform_wooden_a
 prefab light
 prefab merchandise_cloth_a
+prefab merchandise_ironware_pitchfork
+prefab merchandise_wooden_stick
 prefab merlon_1
 prefab merlon_2
 prefab merlon_3
@@ -319,10 +344,8 @@ prefab torch_short_a
 prefab torch_wall_a
 prefab torch_wall_b
 prefab torch_wall_c
-prefab valley_mountain_a
 prefab valley_mountain_b
 prefab valley_mountain_d
-prefab valley_mountain_e
 prefab village_tent_c
 prefab vlandia_arena_wall_a
 prefab vlandia_arena_wall_b
@@ -337,6 +360,8 @@ prefab wooden_platform_2_plank_b
 prefab wooden_platform_2_plank_f_column
 prefab wooden_platform_a
 prefab wooden_platform_c
+prefab wooden_platform_fence_b
+prefab wooden_platform_heap_a
 prefab wooden_platform_plank_b
 prefab wooden_platform_plank_c
 prefab wooden_platform_plank_d

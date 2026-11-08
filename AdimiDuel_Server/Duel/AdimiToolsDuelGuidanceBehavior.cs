@@ -282,8 +282,15 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
             try
             {
                 bool spawn = state.SpawnPending && kind == state.SpawnKind;
-                bool playSound = !soundUsed && (kind == AdimiToolsDuelGuidanceKind.Arena || (spawn && !_spawnHintsShown.Contains(peer)));
-                AdimiToolsNotifier.ServerSendGuidanceToPlayer(network, AdimiToolsDuelGuidanceText.Get(kind), playSound);
+                bool firstSpawnHint = spawn && !_spawnHintsShown.Contains(peer);
+                bool playSound = !soundUsed && (kind == AdimiToolsDuelGuidanceKind.Arena || firstSpawnHint);
+                string message = AdimiToolsDuelGuidanceText.Get(kind);
+                if (firstSpawnHint && AdimiToolsMissionMultiplayerDuel.PlayersDuelConfig.TryGetValue(network.VirtualPlayer.Id, out var config))
+                {
+                    message += "\n" + AdimiToolsDuelGuidanceText.GetCurrentMode(AdimiToolsDuelModes.GetModeName(config.FirstToLimit));
+                }
+
+                AdimiToolsNotifier.ServerSendGuidanceToPlayer(network, message, playSound);
                 soundUsed |= playSound;
                 if (spawn)
                 {

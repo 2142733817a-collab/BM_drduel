@@ -79,25 +79,18 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
         ItemObject? item = index == EquipmentIndex.None ? null : agent.Equipment[index].Item;
         WeaponComponentData? weapon = index == EquipmentIndex.None ? null : agent.Equipment[index].CurrentUsageItem;
         MPPerkObject.MPPerkHandler? perks = MPPerkObject.GetPerkHandler(agent);
-        int weaponSkill = GetEffectiveSkill(agent, item?.RelevantSkill ?? DefaultSkills.Athletics);
         int riding = GetEffectiveSkill(agent, DefaultSkills.Riding);
-        float speed = 0.93f + 0.0007f * weaponSkill;
 
-        // The original private MP human update reads Character directly for
-        // these values. Recompute only those reads with the effective skill,
-        // preserving native ordering: skill formula, perk, mounted penalty.
-        properties.SwingSpeedMultiplier = WithPerk(perks, DrivenProperty.SwingSpeedMultiplier, speed);
-        properties.ThrustOrRangedReadySpeedMultiplier = WithPerk(perks, DrivenProperty.ThrustOrRangedReadySpeedMultiplier, speed);
-        properties.ReloadSpeed = WithPerk(perks, DrivenProperty.ReloadSpeed, speed);
-        if (agent.HasMount && weapon != null)
+        // Keep the base melee animation speed and apply boosted proficiency
+        // to ranged timing. The engine still uses effective skill for AI decisions.
+        if (weapon?.IsRangedWeapon == true)
         {
-            float penalty = 0.3f - riding * 0.003f;
-            if (penalty > 0f)
-            {
-                properties.SwingSpeedMultiplier = System.Math.Max(0f, properties.SwingSpeedMultiplier * (1f - penalty));
-                properties.ThrustOrRangedReadySpeedMultiplier = System.Math.Max(0f, properties.ThrustOrRangedReadySpeedMultiplier * (1f - penalty));
-                properties.ReloadSpeed = System.Math.Max(0f, properties.ReloadSpeed * (1f - penalty));
-            }
+            int weaponSkill = GetEffectiveSkill(agent, item?.RelevantSkill ?? DefaultSkills.Athletics);
+            float speed = 0.93f + 0.0007f * weaponSkill;
+            float mountedFactor = agent.HasMount ? 1f - System.Math.Max(0f, 0.3f - riding * 0.003f) : 1f;
+            properties.SwingSpeedMultiplier = System.Math.Max(0f, WithPerk(perks, DrivenProperty.SwingSpeedMultiplier, speed) * mountedFactor);
+            properties.ThrustOrRangedReadySpeedMultiplier = System.Math.Max(0f, WithPerk(perks, DrivenProperty.ThrustOrRangedReadySpeedMultiplier, speed) * mountedFactor);
+            properties.ReloadSpeed = System.Math.Max(0f, WithPerk(perks, DrivenProperty.ReloadSpeed, speed) * mountedFactor);
         }
 
         float mountRiding = agent.MountAgent?.GetAgentDrivenPropertyValue(DrivenProperty.AttributeRiding) ?? 1f;

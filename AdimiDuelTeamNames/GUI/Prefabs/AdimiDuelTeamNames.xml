@@ -1,0 +1,13 @@
+<Prefab>
+  <Window>
+    <Widget WidthSizePolicy="StretchToParent" HeightSizePolicy="StretchToParent" IsVisible="@HasNames" DoNotAcceptEvents="true" DoNotPassEventsToChildren="true">
+      <Children>
+        <Widget DataSource="{Names}" WidthSizePolicy="StretchToParent" HeightSizePolicy="StretchToParent">
+          <ItemTemplate>
+            <TextWidget WidthSizePolicy="Fixed" HeightSizePolicy="Fixed" SuggestedWidth="280" SuggestedHeight="28" PositionXOffset="@X" PositionYOffset="@Y" IsVisible="@IsVisible" Brush="MPHUD.Duel.Card.NameText" Brush.TextHorizontalAlignment="Center" Brush.FontSize="19" Text="@Name" />
+          </ItemTemplate>
+        </Widget>
+      </Children>
+    </Widget>
+  </Window>
+</Prefab>

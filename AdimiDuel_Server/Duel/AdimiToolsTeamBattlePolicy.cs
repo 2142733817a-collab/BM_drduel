@@ -7,6 +7,7 @@ internal static class AdimiToolsTeamBattlePolicy
     public const string SideB = "adimi_team_side_b";
     public const string Area = "adimi_team_area";
     public const string Barrier = "adimi_team_barrier";
+    public const string FriendlyFireToggle = "adimi_team_tk_toggle";
 
     public static bool TryGetGroupId(IEnumerable<string> tags, out int id)
     {

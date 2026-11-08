@@ -12,6 +12,8 @@ internal sealed class AdimiToolsDuelMarkerSync
     private readonly Mission _mission;
     private readonly Func<MissionPeer, bool, bool> _isBusy;
     private readonly Func<MissionPeer, bool> _isInAiChallenge;
+    private readonly Func<MissionPeer, Team?> _getMatchTeam;
+    private readonly Func<MissionPeer, MissionPeer, bool> _hasOrb;
     private readonly AdimiToolsDuelMarkerVisibility<MissionPeer> _visibility = new();
     private readonly Dictionary<MissionPeer, HashSet<MissionPeer>> _recoveryTargets = new();
     private readonly int _arenaIndex;
@@ -19,11 +21,14 @@ internal sealed class AdimiToolsDuelMarkerSync
     private bool _enabled;
 
     public AdimiToolsDuelMarkerSync(Mission mission, Func<MissionPeer, bool, bool> isBusy,
-        Func<MissionPeer, bool>? isInAiChallenge = null)
+        Func<MissionPeer, bool>? isInAiChallenge = null, Func<MissionPeer, Team?>? getMatchTeam = null,
+        Func<MissionPeer, MissionPeer, bool>? hasOrb = null)
     {
         _mission = mission;
         _isBusy = isBusy;
         _isInAiChallenge = isInAiChallenge ?? (_ => false);
+        _getMatchTeam = getMatchTeam ?? (_ => null);
+        _hasOrb = hasOrb ?? ((_, _) => false);
         _arenaIndex = FindArenaIndex(mission);
         _enabled = _arenaIndex >= 0
             && !string.Equals(Environment.GetEnvironmentVariable("ADIMI_DUEL_DISTANCE_MARKERS"), "0", StringComparison.Ordinal);
@@ -59,6 +64,7 @@ internal sealed class AdimiToolsDuelMarkerSync
 
         // Do not rescan all duel lists for every observer/target pair.
         var inAiChallenge = peers.ToDictionary(p => p, p => _isInAiChallenge(p));
+        var matchTeams = peers.ToDictionary(p => p, p => _getMatchTeam(p));
         var targetBusy = peers.ToDictionary(p => p, p => (!inAiChallenge[p] && p.Team != _mission.AttackerTeam) || _isBusy(p, false));
         var observerBusy = peers.ToDictionary(p => p, p => _isBusy(p, true));
         var positions = peers.ToDictionary(p => p, p => p.ControlledAgent?.Position);
@@ -70,12 +76,19 @@ internal sealed class AdimiToolsDuelMarkerSync
                 continue;
             }
 
-            var targets = peers.Select(target => new DuelMarkerTarget<MissionPeer>(
-                target,
-                positions[target].HasValue ? positions[observer].GetValueOrDefault().DistanceSquared(positions[target].GetValueOrDefault()) : float.NaN,
-                active[target],
-                targetBusy[target],
-                MustHide: inAiChallenge[observer] || inAiChallenge[target]));
+            Team? observerTeam = matchTeams[observer];
+            var targets = peers.Select(target =>
+            {
+                bool teammate = observerTeam != null && ReferenceEquals(observerTeam, matchTeams[target]);
+                bool hasOrb = teammate && _hasOrb(observer, target);
+                return new DuelMarkerTarget<MissionPeer>(
+                    target,
+                    positions[target].HasValue ? positions[observer].GetValueOrDefault().DistanceSquared(positions[target].GetValueOrDefault()) : float.NaN,
+                    active[target],
+                    targetBusy[target],
+                    MustHide: hasOrb || (!teammate && (inAiChallenge[observer] || inAiChallenge[target])),
+                    MustShow: teammate && !hasOrb);
+            });
             DuelMarkerBatch<MissionPeer> batch = _visibility.Plan(observer, targets, canUpdate: true);
             if (!batch.IsEmpty)
             {
@@ -182,8 +195,15 @@ internal sealed class AdimiToolsDuelMarkerSync
         foreach (KeyValuePair<MissionPeer, HashSet<MissionPeer>> entry in _recoveryTargets.ToArray())
         {
             MissionPeer observer = entry.Key;
-            if (!connectedPeers.Contains(observer) || observer.Team != _mission.AttackerTeam
-                || !(observer.ControlledAgent?.IsActive() ?? false) || _isBusy(observer, true) || _isInAiChallenge(observer))
+            if (!connectedPeers.Contains(observer) || !(observer.ControlledAgent?.IsActive() ?? false) || _isBusy(observer, true))
+            {
+                continue;
+            }
+
+            Team? matchTeam = _getMatchTeam(observer);
+            if ((matchTeam == null && (observer.Team != _mission.AttackerTeam || _isInAiChallenge(observer)))
+                || (matchTeam != null && !entry.Value.Any(target => connectedPeers.Contains(target)
+                    && ReferenceEquals(matchTeam, _getMatchTeam(target)))))
             {
                 continue;
             }
@@ -223,17 +243,16 @@ internal sealed class AdimiToolsDuelMarkerSync
                     continue;
                 }
 
-                if (_isInAiChallenge(target))
+                if (matchTeam != null ? !ReferenceEquals(matchTeam, _getMatchTeam(target))
+                    : _isInAiChallenge(target) || target.Team != _mission.AttackerTeam)
                 {
-                    // AI participants receive no genuine DuelEnded. Retain the
-                    // queued restoration until their complete series ends.
+                    // Recover only allies during a match. Other markers remain
+                    // queued until the players return to the public team.
                     continue;
                 }
 
-                if (target.Team != _mission.AttackerTeam)
+                if (_hasOrb(observer, target))
                 {
-                    // Spectator/null-team transitions do not emit DuelEnded.
-                    // Keep the cached target until it returns or disconnects.
                     continue;
                 }
 

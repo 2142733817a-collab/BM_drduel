@@ -15,6 +15,7 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
         var hide = new List<TPeer>();
         var forcedHide = new List<TPeer>();
         var restore = new List<TPeer>();
+        var teammateRestore = new List<TPeer>();
         if (!canUpdate)
         {
             return new(observer, hide, restore);
@@ -33,6 +34,16 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
             }
 
             bool wasHidden = hidden?.Contains(target.Peer) ?? false;
+            if (target.MustShow)
+            {
+                if (wasHidden)
+                {
+                    teammateRestore.Add(target.Peer);
+                }
+
+                continue;
+            }
+
             if (target.MustHide)
             {
                 if (!wasHidden)
@@ -58,9 +69,10 @@ internal sealed class AdimiToolsDuelMarkerVisibility<TPeer>
             }
         }
 
-        // AI participation takes priority over ordinary distance changes.
-        forcedHide = forcedHide.Take(MaximumChangesPerBatch).ToList();
-        restore = restore.Take(MaximumChangesPerBatch - forcedHide.Count).ToList();
+        // Match rosters take priority over ordinary distance changes.
+        teammateRestore = teammateRestore.Take(MaximumChangesPerBatch).ToList();
+        forcedHide = forcedHide.Take(MaximumChangesPerBatch - teammateRestore.Count).ToList();
+        restore = teammateRestore.Concat(restore.Take(MaximumChangesPerBatch - teammateRestore.Count - forcedHide.Count)).ToList();
         hide = forcedHide.Concat(hide.Take(MaximumChangesPerBatch - forcedHide.Count - restore.Count)).ToList();
         return new(observer, hide, restore);
     }
@@ -129,7 +141,8 @@ internal enum DuelMarkerOperationKind
     EndSelf,
 }
 
-internal readonly record struct DuelMarkerTarget<TPeer>(TPeer Peer, float DistanceSquared, bool IsActive, bool IsInDuel, bool MustHide = false)
+internal readonly record struct DuelMarkerTarget<TPeer>(TPeer Peer, float DistanceSquared, bool IsActive, bool IsInDuel,
+    bool MustHide = false, bool MustShow = false)
     where TPeer : notnull;
 
 internal readonly record struct DuelMarkerOperation<TPeer>(DuelMarkerOperationKind Kind, TPeer Peer)

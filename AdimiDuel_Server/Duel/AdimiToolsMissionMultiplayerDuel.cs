@@ -1,4 +1,4 @@
-﻿using AdimiToolsHelper;
+using AdimiToolsHelper;
 using AdimiToolsShared;
 using NetworkMessages.FromClient;
 using NetworkMessages.FromServer;
@@ -615,7 +615,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         _sheetWeaponCheckTimer = new MissionTimer(0.5f);
         InitSpawnedWeapons();
         InitTeleportDoors();
-        _duelMarkerSync = new AdimiToolsDuelMarkerSync(Mission, IsPeerBusyForMarkerUpdates, IsPeerInAiChallengeForMarkerUpdates);
+        AdimiToolsTeamOrbSync? orbs = Mission.GetMissionBehavior<AdimiToolsTeamOrbSync>();
+        _duelMarkerSync = new AdimiToolsDuelMarkerSync(Mission, IsPeerBusyForMarkerUpdates,
+            IsPeerInAiChallengeForMarkerUpdates, GetMatchTeamForMarkerUpdates,
+            orbs == null ? null : orbs.HasVisibleMarker);
         _aiDuelDisplay = new AdimiToolsAiDuelDisplay(Mission,
             peer => IsPeerBusyForMarkerUpdates(peer, true) || IsPeerInAiChallengeForMarkerUpdates(peer),
             _duelMarkerSync.OnTargetRestored);
@@ -973,6 +976,37 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         }
     }
 
+    internal bool IsFightingIn(VolumeBox area)
+    {
+        foreach (DuelInfo duel in _activeDuels)
+        {
+            if (!duel.Started || duel.ChallengeEnded || _endingDuels.Contains(duel))
+            {
+                continue;
+            }
+
+            if (_duelBoundaries.TryGetValue(duel, out DuelBoundaryHold? hold))
+            {
+                if (!hold.Lowering && !hold.RecoveryPending && hold.Boundary.IsForArea(area))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            Agent? first = duel.RequesterPeer.ControlledAgent;
+            Agent? second = duel.RequesteePeer.ControlledAgent;
+            if (AdimiToolsMountSafety.IsLiving(Mission, first) && AdimiToolsMountSafety.IsLiving(Mission, second)
+                && area.IsPointIn(GetDuelGround(first!)) && area.IsPointIn(GetDuelGround(second!)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     internal bool IsPeerBusyForAiChallenge(MissionPeer peer)
     {
         // Deliberately excludes AI reservations: the owner can add hits during
@@ -1134,7 +1168,6 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             duelConfig.DeathFrame = null;
             duelConfig.LastTeleportWarningTimer = MissionTime.Now;
-            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, $"当前为{AdimiToolsDuelModes.GetModeName(duelConfig.FirstToLimit)}。挥砍木桶，或输入 !1、!3.2、!5.3 切换。");
         }
     }
 
@@ -1595,6 +1628,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true;
     }
 
+    private Team? GetMatchTeamForMarkerUpdates(MissionPeer peer)
+        => Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.GetMarkerTeam(peer)
+            ?? Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.GetCoopMarkerTeam(peer);
+
     private bool IsThereARequestBetweenPeers(MissionPeer requesterAgent, MissionPeer requesteeAgent)
     {
         for (int i = 0; i < _duelRequests.Count; i++)
@@ -1903,6 +1940,7 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 }
 
                 // Yes, we replace the picked up item immediately, otherwise sometimes invisible items occure. Thanks TaleWorlds!
+                // Only refresh the actual picked-up entity if it is already wielded.
                 // Native pickup has already selected/merged the ammunition slot.
                 // Re-equipping the wielded slot here would replace the bow with ammo.
                 bool isAmmunition = spawnedItem.ItemObject.ItemType is ItemObject.ItemTypeEnum.Arrows or ItemObject.ItemTypeEnum.Bolts;
@@ -1910,7 +1948,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 EquipmentIndex wieldedItemIndex = targetHandIndex == HandIndex.MainHand
                     ? agent.GetPrimaryWieldedItemIndex()
                     : agent.GetOffhandWieldedItemIndex();
-                if (!isAmmunition && wieldedItemIndex != EquipmentIndex.None)
+                if (!isAmmunition && wieldedItemIndex != EquipmentIndex.None
+                    && agent.GetWeaponEntityFromEquipmentSlot(wieldedItemIndex) == spawnedItemEntity.GameEntity)
                 {
                     // Yes, there are tons of simpler approaches, unfortunately there is a bug with Bannerlord atm which leads to invisible weapons for some players occosionally.
                     // This approach eliminates this issue the most of the times. I know it makes no sense.

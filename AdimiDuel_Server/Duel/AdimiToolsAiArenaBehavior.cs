@@ -94,6 +94,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public bool ScoreSettled { get; set; }
         public int StartedAiCount { get; set; }
         public double NextRoundAt { get; set; }
+        public double NextRoundEquipmentRestoreAt { get; set; }
         public double RespawnDeadline { get; set; }
         public float HealthLimit { get; set; }
         public float BaseHealthLimit { get; set; }
@@ -188,7 +189,68 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             || arena.HasCoopMember(peer));
     }
 
+    public Team? GetCoopMarkerTeam(MissionPeer peer)
+    {
+        if (_ending || _sceneClearing || peer.Team == null)
+        {
+            return null;
+        }
+
+        foreach (Arena arena in _arenas.Values)
+        {
+            if (!arena.IsCoop || arena.Session.State != AdimiToolsAiArenaState.Running || peer.Team != arena.PlayerTeam)
+            {
+                continue;
+            }
+
+            if ((!arena.OwnerDiedThisRound && !arena.OwnerWithdrew && ReferenceEquals(arena.Session.Owner, peer)
+                    && ReferenceEquals(arena.OwnerAgent, peer.ControlledAgent) && IsLivingAgent(arena.OwnerAgent))
+                || arena.CoopMembers.Any(member => ReferenceEquals(member.Peer, peer) && !member.Died && !member.Withdrew
+                    && ReferenceEquals(member.Agent, peer.ControlledAgent) && IsLivingAgent(member.Agent)))
+            {
+                return arena.PlayerTeam;
+            }
+        }
+
+        return null;
+    }
+
+    public IEnumerable<(Agent agent, bool hasBox)> GetOrbOpponents(MissionPeer peer)
+    {
+        if (_ending || _sceneClearing || peer.ControlledAgent is not Agent agent || !IsLivingAgent(agent))
+        {
+            yield break;
+        }
+
+        foreach (Arena arena in _arenas.Values)
+        {
+            if (arena.Session.State != AdimiToolsAiArenaState.Running || arena.RoundPending || peer.Team != arena.PlayerTeam
+                || agent.Team != arena.PlayerTeam)
+            {
+                continue;
+            }
+
+            bool isFighter = (!arena.OwnerDiedThisRound && !arena.OwnerWithdrew && ReferenceEquals(arena.Session.Owner, peer)
+                    && ReferenceEquals(arena.OwnerAgent, agent))
+                || arena.CoopMembers.Any(member => ReferenceEquals(member.Peer, peer) && ReferenceEquals(member.Agent, agent)
+                    && !member.Died && !member.Withdrew);
+            if (isFighter)
+            {
+                foreach (Agent bot in arena.Bots.Where(IsLivingAgent))
+                {
+                    yield return (bot, arena.Area != null);
+                }
+
+                yield break;
+            }
+        }
+    }
+
     public bool IsPositionInArena(Vec3 position) => !_sceneClearing && _arenas.Values.Any(arena => arena.Area?.IsPointIn(position) == true);
+
+    public bool IsFightingIn(VolumeBox area)
+        => !_sceneClearing && _arenas.Values.Any(arena => ReferenceEquals(arena.Area, area)
+            && arena.Session.State == AdimiToolsAiArenaState.Running);
 
     public MatrixFrame? GetRoundRespawnFrame(MissionPeer peer)
     {
@@ -730,11 +792,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
                         if (arena.RespawnNoticePending || !arena.Bots.Any(IsLivingAgent))
                         {
-                            arena.RespawnNoticePending = false;
                             if (!PreparePendingRound(arena, owner, ownerAgent, now))
                             {
                                 continue;
                             }
+
+                            arena.RespawnNoticePending = false;
                         }
                     }
                     else if (arena.OwnerDiedThisRound || !IsLivingAgent(ownerAgent))
@@ -1210,6 +1273,47 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             failures.Add(exception);
         }
+    }
+
+    private static bool TryRestoreCavalryRoundWeapons(Arena arena, Agent ownerAgent, double now)
+    {
+        if (arena.IsCoop || arena.Equipment is not Equipment saved
+            || (saved[EquipmentIndex.Horse].IsEmpty && arena.OriginalCharacter?.AgentCharacter.DefaultFormationClass
+                is not (FormationClass.Cavalry or FormationClass.LightCavalry or FormationClass.HeavyCavalry or FormationClass.HorseArcher)))
+        {
+            return true;
+        }
+
+        if (now < arena.NextRoundEquipmentRestoreAt)
+        {
+            return false;
+        }
+
+        // Compare with the actual post-spawn equipment. Perk SpawnEnd can
+        // strip or replace slots even if the build used the saved snapshot.
+        for (EquipmentIndex slot = EquipmentIndex.WeaponItemBeginSlot; slot < EquipmentIndex.NumAllWeaponSlots; slot++)
+        {
+            MissionWeapon current = ownerAgent.Equipment[slot];
+            EquipmentElement original = saved[slot];
+            if (ReferenceEquals(current.Item, original.Item) && ReferenceEquals(current.ItemModifier, original.ItemModifier))
+            {
+                continue;
+            }
+
+            try
+            {
+                AdimiToolsAiArenaEquipment.Restore(ownerAgent, saved, arena.Banner);
+                return true;
+            }
+            catch (Exception exception)
+            {
+                arena.NextRoundEquipmentRestoreAt = now + 1d;
+                AdimiToolsConsoleLog.Log($"AI arena {arena.Label} cavalry round weapon restore will retry: {exception.Message}");
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static void PrepareRoundOwner(Arena arena, Agent ownerAgent)
@@ -2018,6 +2122,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         arena.RoundPending = true; // Lock this round before any removal callbacks.
+        arena.NextRoundEquipmentRestoreAt = 0d;
         bool finished = arena.Series.RecordRound(playerWon);
         _duelMode?.RecordAiChallengeDisplayRound(arena.Id, playerWon);
         if (finished)
@@ -2127,6 +2232,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // The winner remains the same Agent at the same position. Only a dead
         // AI is replaced; a retained AI is never recreated or teleported here.
         PrepareRoundSurvivors(arena);
+        if (!TryRestoreCavalryRoundWeapons(arena, ownerAgent, now))
+        {
+            return false;
+        }
+
         if (arena.Bots.Count == 0)
         {
             if (!PrepareSpawnPositions(arena))
@@ -2730,6 +2840,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 arena.PlayerDeathFrame = null;
                 arena.OriginalCharacter = null;
                 arena.NextRoundAt = 0d;
+                arena.NextRoundEquipmentRestoreAt = 0d;
                 arena.RespawnDeadline = 0d;
                 arena.SpawnPositions.Clear();
             }
