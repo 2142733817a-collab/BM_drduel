@@ -12,6 +12,9 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
 {
     internal const double MinimumDelaySeconds = 0.12d;
     internal const double OpportunitySeconds = 1.8d;
+    internal const double RecoveryMarginSeconds = 0.03d;
+    private const float MaximumStunSeconds = (float)OpportunitySeconds;
+    private const float UnknownStunSeconds = 0.35f;
     private const long SnapshotMilliseconds = 100;
     private const long AttackMilliseconds = 200;
     private const Agent.EventControlFlag InterruptingEvents = Agent.EventControlFlag.Kick
@@ -26,17 +29,21 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
     private bool _attackStarted;
     private int _attackerIndex = -1;
     private double _hitAt;
+    private double _earliestAttackAt;
     private double _lastObservedAt;
     private long _opportunityExpiresAt;
     private long _snapshotExpiresAt;
     private long _attackExpiresAt;
     private Agent.MovementControlFlag _attack;
 
-    public AdimiToolsAiArenaHitCounter(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaHitCounter(Agent agent)
+        : base(agent)
+    {
+    }
 
     // The caller filters actual hostile melee damage before recording a hit.
     // Repeated damage replaces the previous opportunity and stops its input.
-    public void RecordHit(double now, int attackerIndex)
+    public void RecordHit(double now, int attackerIndex, float defenderStunSeconds = 0f)
     {
         lock (_gate)
         {
@@ -52,6 +59,14 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
             _attackStarted = false;
             _attackerIndex = attackerIndex;
             _hitAt = now;
+            // The hit callback can precede Native's visible hit animation.
+            // Respect its reported stun even if the sampled action temporarily
+            // looks idle. Unknown values use a conservative bounded fallback;
+            // a longer-than-opportunity stun naturally expires without attack.
+            float boundedStun = float.IsFinite(defenderStunSeconds)
+                ? Math.Clamp(defenderStunSeconds, 0f, MaximumStunSeconds)
+                : UnknownStunSeconds;
+            _earliestAttackAt = now + Math.Max(MinimumDelaySeconds, boundedStun + RecoveryMarginSeconds);
             _lastObservedAt = now;
             _opportunityExpiresAt = AddMilliseconds(clock, 1800);
             _snapshotExpiresAt = 0;
@@ -69,7 +84,10 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
     {
         lock (_gate)
         {
-            if (!_pending) return;
+            if (!_pending)
+            {
+                return;
+            }
 
             long clock = Stopwatch.GetTimestamp();
             if (ExpiredLocked(clock) || !double.IsFinite(now) || now < _lastObservedAt
@@ -94,7 +112,7 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
                 return;
             }
 
-            if (recovering || now - _hitAt < MinimumDelaySeconds)
+            if (recovering || now < _earliestAttackAt)
             {
                 _armed = false;
                 return;
@@ -120,15 +138,63 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
         {
             lock (_gate)
             {
-                if (_pending && ExpiredLocked(Stopwatch.GetTimestamp())) ClearLocked();
+                if (_pending && ExpiredLocked(Stopwatch.GetTimestamp()))
+                {
+                    ClearLocked();
+                }
+
                 return _pending;
             }
         }
     }
 
+    // Readable safely from other managed components; no native Agent access.
+    // The callback may run on a worker, so wall-clock expiry is checked here.
+    public int PendingAttackerIndex
+    {
+        get
+        {
+            lock (_gate)
+            {
+                if (_pending && ExpiredLocked(Stopwatch.GetTimestamp()))
+                {
+                    ClearLocked();
+                }
+
+                return _pending ? _attackerIndex : -1;
+            }
+        }
+    }
+
+    // The mission thread can additionally validate its authoritative clock
+    // before retargeting. This prevents a one-frame chase after a time jump
+    // or logical opportunity expiry even if little wall time has elapsed.
+    public int GetPendingAttackerIndex(double now)
+    {
+        lock (_gate)
+        {
+            if (!_pending)
+            {
+                return -1;
+            }
+
+            if (ExpiredLocked(Stopwatch.GetTimestamp()) || !double.IsFinite(now) || now < _lastObservedAt
+                || now - _hitAt >= OpportunitySeconds)
+            {
+                ClearLocked();
+                return -1;
+            }
+
+            return _attackerIndex;
+        }
+    }
+
     public void Clear()
     {
-        lock (_gate) ClearLocked();
+        lock (_gate)
+        {
+            ClearLocked();
+        }
     }
 
     public override void OnAIInputSet(ref Agent.EventControlFlag eventFlag, ref Agent.MovementControlFlag movementFlag,
@@ -136,7 +202,11 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
     {
         lock (_gate)
         {
-            if (!_pending) return;
+            if (!_pending)
+            {
+                return;
+            }
+
             long clock = Stopwatch.GetTimestamp();
             if (ExpiredLocked(clock))
             {
@@ -206,6 +276,7 @@ internal sealed class AdimiToolsAiArenaHitCounter : AgentComponent
         _attackStarted = false;
         _attackerIndex = -1;
         _hitAt = 0d;
+        _earliestAttackAt = 0d;
         _lastObservedAt = 0d;
         _opportunityExpiresAt = 0;
         _snapshotExpiresAt = 0;

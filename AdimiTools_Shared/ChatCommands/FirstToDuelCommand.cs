@@ -63,7 +63,8 @@ internal class FirstToDuelCommand : ChatCommand
 
         if (missionPeer.Team?.IsDefender == true)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "对局进行中，无法切换胜场设置。");
+            AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer,
+                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure("对局进行中，无法切换胜场设置。"));
             return;
         }
 
@@ -75,7 +76,8 @@ internal class FirstToDuelCommand : ChatCommand
         }
         else
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "无法读取对局设置，请稍后重试。");
+            AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer,
+                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure("无法读取对局设置，请稍后重试。"));
         }
     }
 }

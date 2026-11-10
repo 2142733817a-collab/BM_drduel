@@ -37,7 +37,8 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
 
             if (missionPeer.Team?.IsDefender == true)
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "对局进行中，无法切换胜场设置。");
+                AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer,
+                    AdimiToolsDuelGuidanceText.GetModeFailure("对局进行中，无法切换胜场设置。"));
                 return false;
             }
 
@@ -55,7 +56,8 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
             }
             else
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "无法读取对局设置，请稍后重试。");
+                AdimiToolsNotifier.ServerSendGuidanceToPlayer(networkPeer,
+                    AdimiToolsDuelGuidanceText.GetModeFailure("无法读取对局设置，请稍后重试。"));
             }
         }
 

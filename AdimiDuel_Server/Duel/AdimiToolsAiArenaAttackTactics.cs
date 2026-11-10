@@ -9,7 +9,18 @@ namespace AdimiDuel_Server.Duel;
 // the mission thread; the AI callback consumes only this component's snapshot.
 internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
 {
-    private enum Phase { Idle, FeintWait, FeintCancel, FeintConfirm, FeintRestart, ComboWait, ComboRestart, FlashPulse, Follow }
+    private enum Phase
+    {
+        Idle,
+        FeintWait,
+        FeintCancel,
+        FeintConfirm,
+        FeintRestart,
+        ComboWait,
+        ComboRestart,
+        FlashPulse,
+        Follow,
+    }
 
     private const Agent.EventControlFlag InterruptingEvents = Agent.EventControlFlag.Kick | Agent.EventControlFlag.Mount
         | Agent.EventControlFlag.Dismount | Agent.EventControlFlag.Rear | Agent.EventControlFlag.Jump
@@ -36,7 +47,10 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
     private bool _afterHitSawReady;
     private long _snapshotUntil;
 
-    public AdimiToolsAiArenaAttackTactics(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaAttackTactics(Agent agent)
+        : base(agent)
+    {
+    }
 
     // Other attack-selection components must yield once this component has
     // requested a cancel/restart, until the selected follow-up is released.
@@ -55,7 +69,7 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
     public void Observe(double now, int targetIndex, object? weapon, object? offhand, bool eligible, bool threat,
         int difficulty, Agent.ActionCodeType action, Agent.ActionStage stage, Agent.UsageDirection direction, float progress,
         Agent.MovementControlFlag allowedAttacks, Agent.MovementControlFlag preferredSide, double feintRoll, double comboRoll,
-        Agent.MovementControlFlag swingAttacks = Agent.MovementControlFlag.AttackMask)
+        Agent.MovementControlFlag swingAttacks = Agent.MovementControlFlag.AttackMask, bool opponentHoldingAttack = false)
     {
         lock (_gate)
         {
@@ -87,12 +101,16 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
                 _snapshotUntil = 0;
                 if (action == Agent.ActionCodeType.ReadyMelee
                     && (stage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady))
+                {
                     _afterHitSawReady = true;
+                }
+
                 if (_afterHitSawReady && action == Agent.ActionCodeType.ReleaseMelee && stage == Agent.ActionStage.AttackRelease)
                 {
                     _afterHitAwaitAttack = false;
                     _wasRelease = true;
                 }
+
                 return;
             }
 
@@ -107,7 +125,11 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
             bool ready = action == Agent.ActionCodeType.ReadyMelee
                 && (stage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady);
             bool release = action == Agent.ActionCodeType.ReleaseMelee && stage == Agent.ActionStage.AttackRelease;
-            if (ready && !_wasReady) _swingBlocked = false;
+            if (ready && !_wasReady)
+            {
+                _swingBlocked = false;
+            }
+
             bool neutral = stage == Agent.ActionStage.None
                 && (action is Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard or Agent.ActionCodeType.Other);
             int actionValue = (int)action;
@@ -119,24 +141,60 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
                 Abort();
             }
 
+            // A held enemy attack is an opening to contest, not a reason to
+            // cancel our own ready into a feint. Only abort a feint whose
+            // defence input has not yet been sent; completed cancels and
+            // subsequent combos retain their normal state transitions.
+            if (opponentHoldingAttack && _phase is (Phase.FeintWait or Phase.FeintCancel))
+            {
+                Abort();
+            }
+
             switch (_phase)
             {
                 case Phase.FeintWait:
-                    if (!ready || stage != Agent.ActionStage.AttackReady || current != _first) Abort();
-                    else if (now >= _until - 0.30d) _phase = Phase.FeintCancel;
+                    if (!ready || stage != Agent.ActionStage.AttackReady || current != _first)
+                    {
+                        Abort();
+                    }
+                    else if (now >= _until - 0.30d)
+                    {
+                        _phase = Phase.FeintCancel;
+                    }
+
                     break;
                 case Phase.FeintCancel:
-                    if (!ready || stage != Agent.ActionStage.AttackReady || current != _first) Abort();
+                    if (!ready || stage != Agent.ActionStage.AttackReady || current != _first)
+                    {
+                        Abort();
+                    }
+
                     break;
                 case Phase.FeintConfirm:
-                    if (release || (!ready && !neutral && !defenseAnimation)) Abort();
-                    else if (!ready && neutral) { _phase = Phase.FeintRestart; _until = now + 0.22d; }
+                    if (release || (!ready && !neutral && !defenseAnimation))
+                    {
+                        Abort();
+                    }
+                    else if (!ready && neutral)
+                    {
+                        _phase = Phase.FeintRestart;
+                        _until = now + 0.22d;
+                    }
+
                     // A brief defence animation is compatible with cancelling;
                     // wait for neutral and never overwrite native defence.
                     break;
                 case Phase.FeintRestart:
-                    if (ready && current == _next) { _phase = Phase.Follow; _until = now + 0.65d; }
-                    else if (!neutral && !defenseAnimation) Abort();
+                    if (ready && current == _next)
+                    {
+                        _phase = Phase.Follow;
+                        _until = now + 0.65d;
+                    }
+                    else if (!neutral && !defenseAnimation)
+                    {
+                        Abort();
+                    }
+
                     break;
                 case Phase.ComboRestart:
                     if (ready && current == _next)
@@ -147,24 +205,47 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
                         _phase = _tryFlash && stage == Agent.ActionStage.AttackQuickReady ? Phase.FlashPulse : Phase.Follow;
                         _until = now + (_phase == Phase.FlashPulse ? 0.10d : 0.65d);
                     }
-                    else if (!neutral && !release && !defenseAnimation) Abort();
+                    else if (!neutral && !release && !defenseAnimation)
+                    {
+                        Abort();
+                    }
+
                     break;
                 case Phase.FlashPulse:
-                    if (!ready || stage != Agent.ActionStage.AttackQuickReady || current != _next) Abort();
+                    if (!ready || stage != Agent.ActionStage.AttackQuickReady || current != _next)
+                    {
+                        Abort();
+                    }
+
                     break;
                 case Phase.ComboWait:
-                    if (!release || !float.IsFinite(progress) || progress < 0f || progress > 1f) Abort();
-                    else if (progress >= 0.55f && progress <= 0.90f) { _phase = Phase.ComboRestart; _until = now + 0.22d; }
-                    else if (progress > 0.90f) Abort();
+                    if (!release || !float.IsFinite(progress) || progress < 0f || progress > 1f)
+                    {
+                        Abort();
+                    }
+                    else if (progress >= 0.55f && progress <= 0.90f)
+                    {
+                        _phase = Phase.ComboRestart;
+                        _until = now + 0.22d;
+                    }
+                    else if (progress > 0.90f)
+                    {
+                        Abort();
+                    }
+
                     break;
                 case Phase.Follow:
-                    if (release || (!ready && !neutral)) Abort();
+                    if (release || (!ready && !neutral))
+                    {
+                        Abort();
+                    }
+
                     break;
             }
 
             if (_phase == Phase.Idle && now >= _cooldownUntil)
             {
-                if (ready && !_wasReady && stage == Agent.ActionStage.AttackReady
+                if (!opponentHoldingAttack && ready && !_wasReady && stage == Agent.ActionStage.AttackReady
                     && current != Agent.MovementControlFlag.None && (allowedAttacks & current) != 0
                     && feintRoll >= 0d && feintRoll < (difficulty == 3 ? 0.35d : 0.18d))
                 {
@@ -201,8 +282,16 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
 
             // Direction or equipment may change while the native animation is
             // still being evaluated. Never request an unsupported direction.
-            if (_phase != Phase.Idle && (_next & allowedAttacks) == 0) Abort();
-            if (_phase != Phase.Idle && _combo && (_next & swingAttacks) == 0) Abort();
+            if (_phase != Phase.Idle && (_next & allowedAttacks) == 0)
+            {
+                Abort();
+            }
+
+            if (_phase != Phase.Idle && _combo && (_next & swingAttacks) == 0)
+            {
+                Abort();
+            }
+
             _wasReady = ready;
             _wasRelease = release;
         }
@@ -210,14 +299,20 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
 
     public void Clear()
     {
-        lock (_gate) ClearCore();
+        lock (_gate)
+        {
+            ClearCore();
+        }
     }
 
     // A transient target/range/weapon change must not erase the fact that an
     // already-started swing was blocked or that a hit counter is still due.
     public void Suspend()
     {
-        lock (_gate) ClearCore(preserveHitGrace: true, preserveBlockedSwing: true);
+        lock (_gate)
+        {
+            ClearCore(preserveHitGrace: true, preserveBlockedSwing: true);
+        }
     }
 
     public void NotifyReceivedHit(double now)
@@ -242,7 +337,10 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
         lock (_gate)
         {
             _swingBlocked = true;
-            if (_phase != Phase.Idle) Abort();
+            if (_phase != Phase.Idle)
+            {
+                Abort();
+            }
         }
     }
 
@@ -251,14 +349,22 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
     {
         lock (_gate)
         {
-            if (Stopwatch.GetTimestamp() > _snapshotUntil || _phase == Phase.Idle) return;
+            if (Stopwatch.GetTimestamp() > _snapshotUntil || _phase == Phase.Idle)
+            {
+                return;
+            }
+
             if ((eventFlag & InterruptingEvents) != 0 || (movementFlag & Agent.MovementControlFlag.Action) != 0)
             {
                 Abort();
                 return;
             }
 
-            if (_phase == Phase.FeintConfirm) return;
+            if (_phase == Phase.FeintConfirm)
+            {
+                return;
+            }
+
             if ((movementFlag & DefenseMask) != 0)
             {
                 // Back-swing guard, read guard and Native defences all win.
@@ -268,10 +374,20 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
 
             Agent.MovementControlFlag attack = movementFlag & Agent.MovementControlFlag.AttackMask;
             uint bits = (uint)attack;
-            if (bits != 0 && (bits & (bits - 1u)) != 0) { Abort(); return; }
+            if (bits != 0 && (bits & (bits - 1u)) != 0)
+            {
+                Abort();
+                return;
+            }
+
             if (_phase == Phase.FeintCancel)
             {
-                if (attack == Agent.MovementControlFlag.None) { Abort(); return; }
+                if (attack == Agent.MovementControlFlag.None)
+                {
+                    Abort();
+                    return;
+                }
+
                 movementFlag = (movementFlag & ~Agent.MovementControlFlag.AttackMask) | GuardFor(_first);
                 _phase = Phase.FeintConfirm;
                 _until = _now + 0.24d;
@@ -360,10 +476,22 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
     {
         Agent.MovementControlFlag choices = allowed & Agent.MovementControlFlag.AttackMask & ~current;
         if ((choices & preferredSide) != 0 && preferredSide is Agent.MovementControlFlag.AttackLeft or Agent.MovementControlFlag.AttackRight)
+        {
             return preferredSide;
-        foreach (Agent.MovementControlFlag candidate in new[] { Agent.MovementControlFlag.AttackUp,
-            Agent.MovementControlFlag.AttackLeft, Agent.MovementControlFlag.AttackRight, Agent.MovementControlFlag.AttackDown })
-            if ((choices & candidate) != 0) return candidate;
+        }
+
+        foreach (Agent.MovementControlFlag candidate in new[]
+        {
+            Agent.MovementControlFlag.AttackUp,
+            Agent.MovementControlFlag.AttackLeft, Agent.MovementControlFlag.AttackRight, Agent.MovementControlFlag.AttackDown,
+        })
+        {
+            if ((choices & candidate) != 0)
+            {
+                return candidate;
+            }
+        }
+
         return Agent.MovementControlFlag.None;
     }
 

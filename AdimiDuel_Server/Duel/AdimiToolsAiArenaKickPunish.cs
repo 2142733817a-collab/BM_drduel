@@ -24,7 +24,14 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         | Agent.MovementControlFlag.DefendBlock | Agent.MovementControlFlag.Action;
     private const Agent.EventControlFlag CompatibleEvents = Agent.EventControlFlag.Walk | Agent.EventControlFlag.Run;
 
-    private enum Phase { None, ConfirmMiss, CounterKick, AwaitKickContact, FollowAttack }
+    private enum Phase
+    {
+        None,
+        ConfirmMiss,
+        CounterKick,
+        AwaitKickContact,
+        FollowAttack,
+    }
 
     private readonly object _gate = new();
     private readonly Dictionary<int, double> _recentEnemyContacts = new();
@@ -44,7 +51,10 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     private bool _attackStarted;
     private Agent.MovementControlFlag _attack;
 
-    public AdimiToolsAiArenaKickPunish(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaKickPunish(Agent agent)
+        : base(agent)
+    {
+    }
 
     // eligible must include living hostile participants in the same running
     // arena, on-foot melee equipment and valid target/distance. enemyKicking
@@ -98,7 +108,10 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                     _phaseExpiresAt = now + ConfirmationSeconds + CounterOpportunitySeconds;
                     _phaseClockExpiresAt = AddMilliseconds(clock, 1680);
                 }
-                else ClearPhaseLocked();
+                else
+                {
+                    ClearPhaseLocked();
+                }
             }
 
             if (_phase == Phase.ConfirmMiss && now >= _phaseStartedAt + ConfirmationSeconds)
@@ -107,8 +120,10 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 // samples and any immediate danger fail closed.
                 double chance = difficulty switch { 2 => 0.7d, 3 => 1d, _ => 0.4d };
                 if (!double.IsFinite(roll) || roll < 0d || roll >= 1d || roll >= chance
-                    || hardStun || otherThreat || ownAttack || ownKicking)
+                    || hardStun || otherThreat)
+                {
                     ClearPhaseLocked();
+                }
                 else
                 {
                     _phase = Phase.CounterKick;
@@ -123,6 +138,18 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 if (hardStun || otherThreat)
                 {
                     ClearPhaseLocked();
+                    return;
+                }
+
+                if (_phase == Phase.CounterKick && (ownAttack || ownKicking))
+                {
+                    // The player has already missed. A Native attack/kick
+                    // that is still finishing should not erase the entire
+                    // bounded opportunity, nor should we interrupt it. Do
+                    // not publish an approach/kick until a fresh safe sample
+                    // observes that action end; the original deadline remains.
+                    _snapshotExpiresAt = 0;
+                    _armed = false;
                     return;
                 }
 
@@ -143,7 +170,11 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             else if (_phase == Phase.FollowAttack)
             {
                 Agent.MovementControlFlag available = allowed & Agent.MovementControlFlag.AttackMask;
-                if (available == Agent.MovementControlFlag.None) return;
+                if (available == Agent.MovementControlFlag.None)
+                {
+                    return;
+                }
+
                 if (_attackStarted && (available & _attack) == Agent.MovementControlFlag.None)
                 {
                     ClearPhaseLocked();
@@ -166,18 +197,34 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     // or zero-damage contacts against any participant, before calling this.
     public void NotifyEnemyKickContact(double now, int attackerIndex)
     {
-        if (!double.IsFinite(now) || now < 0d || attackerIndex < 0) return;
+        if (!double.IsFinite(now) || now < 0d || attackerIndex < 0)
+        {
+            return;
+        }
+
         lock (_gate)
         {
             if (!_recentEnemyContacts.TryGetValue(attackerIndex, out double previous) || now > previous)
+            {
                 _recentEnemyContacts[attackerIndex] = now;
+            }
+
             TrimRecentContactsLocked();
 
-            if (attackerIndex != _targetIndex) return;
+            if (attackerIndex != _targetIndex)
+            {
+                return;
+            }
+
             if (_enemyKickObserved && now >= _enemyKickStartedAt - EarlyContactToleranceSeconds)
+            {
                 _enemyKickContacted = true;
+            }
+
             if (_phase != Phase.None && now >= _enemyKickStartedAt - EarlyContactToleranceSeconds)
+            {
                 ClearPhaseLocked();
+            }
         }
     }
 
@@ -186,12 +233,17 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         lock (_gate)
         {
             long clock = Stopwatch.GetTimestamp();
-            if (_phase != Phase.CounterKick || _targetIndex != targetIndex) return false;
+            if (_phase != Phase.CounterKick || _targetIndex != targetIndex)
+            {
+                return false;
+            }
+
             if (clock >= _phaseClockExpiresAt)
             {
                 ClearPhaseLocked();
                 return false;
             }
+
             return clock < _snapshotExpiresAt;
         }
     }
@@ -204,7 +256,11 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             long clock = Stopwatch.GetTimestamp();
             if (!double.IsFinite(now) || _phase != Phase.CounterKick || targetIndex != _targetIndex
                 || now < _phaseStartedAt || now >= _phaseExpiresAt
-                || clock >= _phaseClockExpiresAt || clock >= _snapshotExpiresAt) return;
+                || clock >= _phaseClockExpiresAt || clock >= _snapshotExpiresAt)
+            {
+                return;
+            }
+
             _phase = Phase.AwaitKickContact;
             _phaseStartedAt = now;
             _phaseExpiresAt = now + KickContactSeconds;
@@ -216,13 +272,17 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
 
     // The caller must confirm this bot's own non-blocked Kick actually hit its
     // current target. An observed KickHit animation alone is not sufficient.
-    public void NotifyOwnKickContact(double now, int targetIndex)
+    public bool NotifyOwnKickContact(double now, int targetIndex)
     {
         lock (_gate)
         {
             long clock = Stopwatch.GetTimestamp();
             if (!double.IsFinite(now) || _phase != Phase.AwaitKickContact || targetIndex != _targetIndex
-                || now < _phaseStartedAt || now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt) return;
+                || now < _phaseStartedAt || now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt)
+            {
+                return false;
+            }
+
             _phase = Phase.FollowAttack;
             _phaseStartedAt = now;
             _phaseExpiresAt = now + FollowOpportunitySeconds;
@@ -232,6 +292,7 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             _armed = false;
             _attackStarted = false;
             _attack = Agent.MovementControlFlag.None;
+            return true;
         }
     }
 
@@ -244,7 +305,10 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 long clock = Stopwatch.GetTimestamp();
                 if ((_phaseClockExpiresAt > 0 && clock >= _phaseClockExpiresAt)
                     || (_attackStarted && clock >= _attackClockExpiresAt))
+                {
                     ClearPhaseLocked();
+                }
+
                 return _phase is Phase.CounterKick or Phase.AwaitKickContact or Phase.FollowAttack;
             }
         }
@@ -252,7 +316,10 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
 
     public void Clear()
     {
-        lock (_gate) ClearLocked();
+        lock (_gate)
+        {
+            ClearLocked();
+        }
     }
 
     public override void OnAIInputSet(ref Agent.EventControlFlag eventFlag,
@@ -261,13 +328,23 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         lock (_gate)
         {
             long clock = Stopwatch.GetTimestamp();
-            if (_phase != Phase.FollowAttack) return;
+            if (_phase != Phase.FollowAttack)
+            {
+                return;
+            }
+
             if (clock >= _phaseClockExpiresAt || (_attackStarted && clock >= _attackClockExpiresAt))
             {
                 ClearPhaseLocked();
                 return;
             }
-            if (!_armed || clock >= _snapshotExpiresAt) { _armed = false; return; }
+
+            if (!_armed || clock >= _snapshotExpiresAt)
+            {
+                _armed = false;
+                return;
+            }
+
             if ((eventFlag & ~CompatibleEvents) != Agent.EventControlFlag.None || (movementFlag & DefenseOrAction) != 0)
             {
                 // No event or defense is overridden. A fresh safe sample is
@@ -275,16 +352,19 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 _armed = false;
                 return;
             }
+
             if ((movementFlag & Agent.MovementControlFlag.AttackMask) != 0)
             {
                 ClearPhaseLocked();
                 return;
             }
+
             if (!_attackStarted)
             {
                 _attackStarted = true;
                 _attackClockExpiresAt = AddMilliseconds(clock, AttackMilliseconds);
             }
+
             movementFlag |= _attack;
         }
     }
@@ -292,28 +372,61 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     private void ExpirePhaseLocked(double now, long clock)
     {
         if (_phase != Phase.None && (now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt
-            || (_attackStarted && clock >= _attackClockExpiresAt))) ClearPhaseLocked();
+            || (_attackStarted && clock >= _attackClockExpiresAt)))
+        {
+            ClearPhaseLocked();
+        }
     }
 
     private void PruneRecentContactsLocked(double now)
     {
-        if (_recentEnemyContacts.Count == 0) return;
+        if (_recentEnemyContacts.Count == 0)
+        {
+            return;
+        }
+
         List<int>? expired = null;
         foreach (var pair in _recentEnemyContacts)
+        {
             if (pair.Value < now - 2.5d || pair.Value > now + EarlyContactToleranceSeconds)
+            {
                 (expired ??= new List<int>()).Add(pair.Key);
-        if (expired == null) return;
-        foreach (int index in expired) _recentEnemyContacts.Remove(index);
+            }
+        }
+
+        if (expired == null)
+        {
+            return;
+        }
+
+        foreach (int index in expired)
+        {
+            _recentEnemyContacts.Remove(index);
+        }
     }
 
     private void TrimRecentContactsLocked()
     {
-        if (_recentEnemyContacts.Count <= MaximumRecentContacts) return;
+        if (_recentEnemyContacts.Count <= MaximumRecentContacts)
+        {
+            return;
+        }
+
         int oldestIndex = -1;
         double oldest = double.PositiveInfinity;
         foreach (var pair in _recentEnemyContacts)
-            if (pair.Value < oldest) { oldest = pair.Value; oldestIndex = pair.Key; }
-        if (oldestIndex >= 0) _recentEnemyContacts.Remove(oldestIndex);
+        {
+            if (pair.Value < oldest)
+            {
+                oldest = pair.Value;
+                oldestIndex = pair.Key;
+            }
+        }
+
+        if (oldestIndex >= 0)
+        {
+            _recentEnemyContacts.Remove(oldestIndex);
+        }
     }
 
     private static Agent.MovementControlFlag ChooseSingle(Agent.MovementControlFlag flags)

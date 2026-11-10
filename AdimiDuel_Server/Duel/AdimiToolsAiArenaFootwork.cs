@@ -35,6 +35,7 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
     }
 
     private readonly AdimiToolsAiArenaFootworkPolicy _policy = new();
+    private readonly Func<bool>? _hasKickProtection;
     private volatile InputSnapshot? _snapshot;
     private double _nextSafetyCheck;
     private int _checkedTarget = -1;
@@ -43,8 +44,21 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
     private float _checkedDistance;
     private double _unsafeSince = -1d;
     private double _unsafeUntil;
+    // Mission-thread-only reference used to keep nearby-opponent selection
+    // stable across adjacent samples. Never read by the native input callback.
+    private int _spacingTargetIndex = -1;
 
-    public AdimiToolsAiArenaFootwork(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaFootwork(Agent agent, Func<bool>? hasKickProtection = null)
+        : base(agent)
+    {
+        _hasKickProtection = hasKickProtection;
+    }
+
+    public int SpacingTargetIndex => _spacingTargetIndex;
+
+    // The caller validates that this index still belongs to a live opponent
+    // in the current arena before reusing it on a later mission sample.
+    public void RememberSpacingTarget(int targetIndex) => _spacingTargetIndex = targetIndex >= 0 ? targetIndex : -1;
 
     public bool TryPlan(double now, int botIndex, int targetIndex, float distance, float weaponLength,
         out float toward, out float lateral, bool incomingKick = false, int difficulty = 3)
@@ -53,8 +67,16 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
         lateral = 0f;
         // A rejection can originate from the counter approach before the
         // ordinary policy has ever initialized its bot/target identity.
-        if (!MayStartCounterApproach(now)) return false;
-        if (_policy.TryGetStep(now, botIndex, targetIndex, distance, weaponLength, out toward, out lateral, incomingKick, difficulty)) return true;
+        if (!MayStartCounterApproach(now))
+        {
+            return false;
+        }
+
+        if (_policy.TryGetStep(now, botIndex, targetIndex, distance, weaponLength, out toward, out lateral, incomingKick, difficulty))
+        {
+            return true;
+        }
+
         Suspend();
         return false;
     }
@@ -77,6 +99,7 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
                 _unsafeSince = now;
                 _unsafeUntil = now + 0.45d;
             }
+
             Suspend();
             _checkedTarget = -1;
             return;
@@ -93,13 +116,23 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
     // previous rejected step simply by changing the target or movement mode.
     public bool MayStartCounterApproach(double now)
     {
-        if (!double.IsFinite(now) || now < 0d) { Suspend(); return false; }
+        if (!double.IsFinite(now) || now < 0d)
+        {
+            Suspend();
+            return false;
+        }
+
         if (_unsafeSince >= 0d && now < _unsafeSince)
         {
             _unsafeSince = -1d;
             _unsafeUntil = 0d;
         }
-        if (now >= _unsafeUntil) return true;
+
+        if (now >= _unsafeUntil)
+        {
+            return true;
+        }
+
         Suspend();
         return false;
     }
@@ -130,6 +163,7 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
         _nextSafetyCheck = 0d;
         _unsafeSince = -1d;
         _unsafeUntil = 0d;
+        _spacingTargetIndex = -1;
     }
 
     public override void OnAIInputSet(ref Agent.EventControlFlag eventFlag, ref Agent.MovementControlFlag movementFlag,
@@ -138,7 +172,8 @@ internal sealed class AdimiToolsAiArenaFootwork : AgentComponent
         InputSnapshot? snapshot = _snapshot;
         if (snapshot == null || Stopwatch.GetTimestamp() > snapshot.ExpiresAt
             || (eventFlag & InterruptingEvents) != 0 || (movementFlag & Agent.MovementControlFlag.Action) != 0
-            || (snapshot.RequiresAttack && (movementFlag & Agent.MovementControlFlag.AttackMask) == 0))
+            || (snapshot.RequiresAttack && (movementFlag & Agent.MovementControlFlag.AttackMask) == 0)
+            || _hasKickProtection?.Invoke() == true)
         {
             return;
         }

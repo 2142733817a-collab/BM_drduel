@@ -79,14 +79,24 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
         try
         {
             var selection = Selections.FirstOrDefault(candidate => candidate.culture == culture.StringId);
-            if (selection.classId == null) return false;
+            if (selection.classId == null)
+            {
+                return false;
+            }
+
             var hero = MultiplayerClassDivisions.GetMPHeroClasses(culture)
                 .FirstOrDefault(candidate => candidate.StringId == selection.classId && candidate.HeroCharacter != null
                     && candidate.HeroCharacter.StringId == selection.classId + "_hero");
-            if (hero == null) return false;
+            if (hero == null)
+            {
+                return false;
+            }
 
             Equipment equipment = hero.HeroCharacter.Equipment.Clone();
-            if (equipment[EquipmentIndex.Horse].IsEmpty || equipment[EquipmentIndex.HorseHarness].IsEmpty) return false;
+            if (equipment[EquipmentIndex.Horse].IsEmpty || equipment[EquipmentIndex.HorseHarness].IsEmpty)
+            {
+                return false;
+            }
 
             EquipmentIndex lanceSlot = EquipmentIndex.None;
             for (EquipmentIndex slot = EquipmentIndex.WeaponItemBeginSlot; slot < EquipmentIndex.NumAllWeaponSlots; slot++)
@@ -99,7 +109,11 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
                 }
             }
 
-            if (lanceSlot == EquipmentIndex.None) return false;
+            if (lanceSlot == EquipmentIndex.None)
+            {
+                return false;
+            }
+
             if (lanceSlot != EquipmentIndex.Weapon0)
             {
                 EquipmentElement previous = equipment[EquipmentIndex.Weapon0];

@@ -21,20 +21,33 @@ internal static class AdimiToolsDuelGuidanceText
 
     public static string GetModeSelection(string modeName)
     {
-        string highlightedMode = System.Text.RegularExpressions.Regex.Replace(FormatMode(modeName), "[0-9]+",
-            number => $"<span style=\"{HighlightStyle}\">{number.Value}</span>");
+        string highlightedMode = HighlightNumbers(FormatMode(modeName));
         return $"{Highlight("【切换对局】")}\n已切换为 {highlightedMode}。\n1v1 或多 v 多时，参战者的赛制须一致。";
     }
 
+    // Team arenas own one shared series, so their notice must not imply that
+    // each participant's individual duel selection is consulted.
+    public static string GetTeamModeSelection(string modeName)
+        => $"{Highlight("【切换对局】")}\n此对局赛制已切换为 {HighlightNumbers(FormatMode(modeName))}。";
+
+    public static string GetModeFailure(string message)
+        => $"{Highlight("【切换对局】")}\n{Escape(message)}";
+
+    public static string GetFriendlyFireNotice(string message)
+        => $"{Highlight("【切换队友伤害】")}\n{Escape(message)}";
+
+    public static string GetAiSwitchNotice(string message)
+        => $"{Highlight("【切换 AI】")}\n{Escape(message)}";
+
     public static string GetModeMismatch(string firstName, string firstMode, string secondName, string secondMode)
-        => $"{Highlight("【赛制不一致】")}\n{Highlight(firstName)}，{Highlight(FormatMode(firstMode))}。\n"
-            + $"{Highlight(secondName)}，{Highlight(FormatMode(secondMode))}。\n{GetModeSwitchInstruction()}";
+        => $"{Highlight("【赛制不一致】")}\n{Escape(firstName)}，{HighlightNumbers(FormatMode(firstMode))}。\n"
+            + $"{Escape(secondName)}，{HighlightNumbers(FormatMode(secondMode))}。\n{GetModeSwitchInstruction()}";
 
     public static string GetModeUsage()
         => $"{Highlight("【赛制用法】")}\n{GetModeSwitchInstruction()}";
 
     public static string GetCurrentMode(string modeName)
-        => $"{Highlight("【当前赛制】")}\n当前为 {Highlight(FormatMode(modeName))}。\n{GetModeSwitchInstruction()}";
+        => $"{Highlight("【当前赛制】")}\n当前为 {HighlightNumbers(FormatMode(modeName))}。\n{GetModeSwitchInstruction()}";
 
     public static string GetTeamCountdown(int sideACount, int sideBCount, int seconds)
         => $"A 队 {Highlight(sideACount.ToString(System.Globalization.CultureInfo.InvariantCulture))} 人 / "
@@ -53,21 +66,32 @@ internal static class AdimiToolsDuelGuidanceText
             _ => "简单 AI",
         };
         string details = independentTroop != null
-            ? $"本场 AI 来自同一个随机阵营。\n{(difficulty == 3 ? "熟练度 330，生命上限翻倍。\n" : string.Empty)}{Highlight("继续挥砍可增加人数（最多 10）")}。"
+            ? $"本场 AI 来自同一个随机阵营。{(difficulty == 3 ? (kind == 2 ? "\n生命上限翻倍。" : "\n熟练度 330，生命上限翻倍。") : string.Empty)}"
             : difficulty switch
             {
                 2 => "兵种、装备与你当前相同。\n熟练度 +50，生命上限翻倍。",
-                3 => "六国随机的固定步兵。\n熟练度 330，生命上限翻倍并加强护甲。",
+                3 => "六国随机同阵营步兵，持巨剑。\n熟练度 330，生命上限翻倍并加强护甲。",
                 _ => "兵种、装备与你当前相同。",
             };
-        return $"{Highlight("【生成 AI】")}\n3 秒后生成 {Highlight(count.ToString(System.Globalization.CultureInfo.InvariantCulture))} 名{troop}。\n{details}";
+        return $"{Highlight("【生成 AI】")}\n3 秒后生成 {Highlight(count.ToString(System.Globalization.CultureInfo.InvariantCulture))} 名{troop}。\n{details}\n"
+            + $"{Highlight("继续挥砍可增加人数（最多 10）")}。";
     }
 
+    public static string GetAiSpawnLimit(int maximum)
+        => $"{Highlight("【生成 AI】")}\n一次最多生成 {Highlight(maximum.ToString(System.Globalization.CultureInfo.InvariantCulture))} 个 AI。";
+
     internal static string Highlight(string text)
-        => $"<span style=\"{HighlightStyle}\">{text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;")}</span>";
+        => $"<span style=\"{HighlightStyle}\">{Escape(text)}</span>";
+
+    internal static string Escape(string text)
+        => text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;");
+
+    private static string HighlightNumbers(string text)
+        => System.Text.RegularExpressions.Regex.Replace(Escape(text), "[0-9]+",
+            number => $"<span style=\"{HighlightStyle}\">{number.Value}</span>");
 
     private static string GetModeSwitchInstruction()
-        => $"挥砍木桶，或输入 {Highlight("!1")}、{Highlight("!3.2")}、{Highlight("!5.3")} 切换。";
+        => "挥砍木桶，或输入 !1、!3.2、!5.3 切换。";
 
     private static string FormatMode(string modeName) => modeName switch
     {
@@ -91,7 +115,7 @@ internal static class AdimiToolsDuelGuidanceText
             + "【多人对战】\n双方站入 A/B 发光准备区。\n每队至少 1 人，两队人数可以不同。\n"
             + "【赛制】\n木桶可以切换1局定胜负、3局2胜、5局3胜。\n"
             + "多人场地默认1局定胜负，砍场内木桶可切换本场赛制。",
-        _ => "【步兵区·中心】\n场内可自由换装。\n挥砍盾牌堆可切换阵营。\n"
+        _ => $"【步兵区·中心】\n挥砍{Highlight("盾牌堆")}可切换阵营。\n"
             + "对局规则可前往任意场地查看。",
     };
 }

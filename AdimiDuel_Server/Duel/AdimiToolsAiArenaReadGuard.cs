@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using TaleWorlds.Core;
 using TaleWorlds.Engine;
 using TaleWorlds.Library;
@@ -13,6 +14,9 @@ namespace AdimiDuel_Server.Duel;
 // performed by the mission thread; the AI callback uses only a short snapshot.
 internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
 {
+    // One independent choice per observed release and defender. This controls
+    // the assistance opportunity, not the eventual native block success rate.
+    internal const double ReadAssistChance = 0.10d;
     private const double GuardWindowSeconds = 0.65d;
     private const double NativeWindowSeconds = 0.30d;
     private const double VisibilityCacheSeconds = 0.10d;
@@ -40,6 +44,16 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         public long ExpiresAt { get; }
     }
 
+    private sealed class ReleaseDecision
+    {
+        public ReleaseDecision(bool selected)
+        {
+            Selected = selected;
+        }
+
+        public bool Selected { get; }
+    }
+
     private readonly struct VisibilitySample
     {
         public VisibilitySample(Scene scene, Vec3 defenderEye, Vec3 attackerEye, double time, bool clear)
@@ -60,12 +74,21 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
 
     private readonly struct ReadyDirectionSample
     {
-        public ReadyDirectionSample(Agent.MovementControlFlag guard, double time) { Guard = guard; Time = time; }
+        public ReadyDirectionSample(Agent.MovementControlFlag guard, double time)
+        {
+            Guard = guard;
+            Time = time;
+        }
+
         public Agent.MovementControlFlag Guard { get; }
         public double Time { get; }
     }
 
     private volatile InputSnapshot? _snapshot;
+    private readonly Func<double> _nextRoll;
+    // Weak keys keep a decision through a brief omission or Clear without
+    // retaining departed players. An observed non-release removes it early.
+    private readonly ConditionalWeakTable<Agent, ReleaseDecision> _releaseDecisions = new();
     private readonly object _publicationGate = new();
     private int _publicationVersion;
     private int _sampledPublicationVersion;
@@ -86,7 +109,16 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
     private double _guardUntil;
     private double _yieldUntil;
 
-    public AdimiToolsAiArenaReadGuard(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaReadGuard(Agent agent)
+        : this(agent, Random.Shared.NextDouble)
+    {
+    }
+
+    internal AdimiToolsAiArenaReadGuard(Agent agent, Func<double> nextRoll)
+        : base(agent)
+    {
+        _nextRoll = nextRoll ?? throw new ArgumentNullException(nameof(nextRoll));
+    }
 
     public void BeginSampling(double now)
     {
@@ -96,6 +128,7 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
             _snapshot = null;
             _sampledPublicationVersion = _publicationVersion;
         }
+
         _sampledTime = now;
         _sampledGuard = Agent.MovementControlFlag.None;
         _sampledAttacker = null;
@@ -107,6 +140,7 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         {
             ResetWindows();
             _previousReleases.Clear();
+            _releaseDecisions.Clear();
             _visibility.Clear();
             _readyDirections.Clear();
         }
@@ -116,7 +150,10 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
 
     public void ConsiderAttacker(Agent attacker)
     {
-        if (!double.IsFinite(_sampledTime)) return;
+        if (!double.IsFinite(_sampledTime))
+        {
+            return;
+        }
 
         Agent.ActionCodeType action = attacker.GetCurrentActionType(1);
         Agent.ActionStage stage = attacker.GetCurrentActionStage(1);
@@ -124,7 +161,16 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         bool ready = action == Agent.ActionCodeType.ReadyMelee
             && stage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady;
         _currentReleases[attacker] = release;
-        bool releaseEdge = release && (!_previousReleases.TryGetValue(attacker, out bool wasRelease) || !wasRelease);
+        bool releaseEdge = release && !_releaseDecisions.TryGetValue(attacker, out _);
+        if (!release)
+        {
+            _releaseDecisions.Remove(attacker);
+        }
+        else if (releaseEdge)
+        {
+            _releaseDecisions.Add(attacker, new ReleaseDecision(SelectReadAssist()));
+        }
+
         if (!_defenderEligible || !ReferenceEquals(attacker.Mission, Agent.Mission))
         {
             _readyDirections.Remove(attacker);
@@ -136,14 +182,26 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
             // Record only a single server-received attack bit. A held ready
             // never publishes a guard; a cancel/ambiguous bit drops the cache.
             Agent.MovementControlFlag readyGuard = GuardForInput(attacker.MovementFlags);
-            if (readyGuard == Agent.MovementControlFlag.None) _readyDirections.Remove(attacker);
-            else _readyDirections[attacker] = new ReadyDirectionSample(readyGuard, _sampledTime);
+            if (readyGuard == Agent.MovementControlFlag.None)
+            {
+                _readyDirections.Remove(attacker);
+            }
+            else
+            {
+                _readyDirections[attacker] = new ReadyDirectionSample(readyGuard, _sampledTime);
+            }
+
             return;
         }
 
         if (!release)
         {
             _readyDirections.Remove(attacker);
+            return;
+        }
+
+        if (!_releaseDecisions.TryGetValue(attacker, out ReleaseDecision? decision) || !decision.Selected)
+        {
             return;
         }
 
@@ -161,26 +219,44 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
                 _readyDirections.Remove(attacker);
                 return;
             }
+
             guard = cached.Guard;
         }
-        if (guard == Agent.MovementControlFlag.None) return;
+
+        if (guard == Agent.MovementControlFlag.None)
+        {
+            return;
+        }
 
         WeaponComponentData? usage = GetUsage(attacker.WieldedWeapon);
-        if (usage?.IsMeleeWeapon != true) return;
+        if (usage?.IsMeleeWeapon != true)
+        {
+            return;
+        }
 
         Vec3 delta = attacker.Position - Agent.Position;
         Vec3 attackLook = attacker.LookDirection;
         Vec3 defendLook = Agent.LookDirection;
         float distanceSquared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-        if (!IsInFrontAndReach(delta, attackLook, defendLook, usage.GetRealWeaponLength())) return;
+        if (!IsInFrontAndReach(delta, attackLook, defendLook, usage.GetRealWeaponLength()))
+        {
+            return;
+        }
+
         if (_sampledAttacker != null && ((_sampledRelease && !release)
-            || (_sampledRelease == release && distanceSquared >= _sampledDistanceSquared))) return;
+            || (_sampledRelease == release && distanceSquared >= _sampledDistanceSquared)))
+        {
+            return;
+        }
 
         Vec3 defenderEye = Agent.GetEyeGlobalPosition();
         Vec3 attackerEye = attacker.GetEyeGlobalPosition();
         Scene? scene = Agent.Mission?.Scene;
         if (scene == null || !IsFinite(defenderEye) || !IsFinite(attackerEye)
-            || !HasClearSight(attacker, scene, defenderEye, attackerEye)) return;
+            || !HasClearSight(attacker, scene, defenderEye, attackerEye))
+        {
+            return;
+        }
 
         _sampledAttacker = attacker;
         _sampledGuard = guard;
@@ -202,12 +278,32 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         (_previousReleases, _currentReleases) = (_currentReleases, _previousReleases);
         _obsoleteVisibility.Clear();
         foreach (Agent cached in _visibility.Keys)
-            if (!_previousReleases.ContainsKey(cached)) _obsoleteVisibility.Add(cached);
-        foreach (Agent obsolete in _obsoleteVisibility) _visibility.Remove(obsolete);
+        {
+            if (!_previousReleases.ContainsKey(cached))
+            {
+                _obsoleteVisibility.Add(cached);
+            }
+        }
+
+        foreach (Agent obsolete in _obsoleteVisibility)
+        {
+            _visibility.Remove(obsolete);
+        }
+
         _obsoleteVisibility.Clear();
         foreach (Agent cached in _readyDirections.Keys)
-            if (!_previousReleases.ContainsKey(cached)) _obsoleteVisibility.Add(cached);
-        foreach (Agent obsolete in _obsoleteVisibility) _readyDirections.Remove(obsolete);
+        {
+            if (!_previousReleases.ContainsKey(cached))
+            {
+                _obsoleteVisibility.Add(cached);
+            }
+        }
+
+        foreach (Agent obsolete in _obsoleteVisibility)
+        {
+            _readyDirections.Remove(obsolete);
+        }
+
         _lastTime = _sampledTime;
         _hasLastTime = true;
         if (_sampledGuard == Agent.MovementControlFlag.None || _sampledAttacker == null)
@@ -224,7 +320,11 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         }
         else if (_yieldUntil > 0d)
         {
-            if (_sampledTime < _yieldUntil) return;
+            if (_sampledTime < _yieldUntil)
+            {
+                return;
+            }
+
             _yieldUntil = 0d;
             _guardUntil = _sampledTime + GuardWindowSeconds;
         }
@@ -247,7 +347,9 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         lock (_publicationGate)
         {
             if (_sampledPublicationVersion == _publicationVersion)
+            {
                 _snapshot = new InputSnapshot(_sampledGuard, expiresAt);
+            }
         }
     }
 
@@ -258,6 +360,7 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
             _snapshot = null;
             _publicationVersion++;
         }
+
         _sampledGuard = Agent.MovementControlFlag.None;
         _sampledAttacker = null;
         _defenderEligible = false;
@@ -266,7 +369,8 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         _visibility.Clear();
         _readyDirections.Clear();
         _obsoleteVisibility.Clear();
-        _hasLastTime = false;
+        // Preserve the last release choices across a temporary Clear. The
+        // same still-ongoing attack must not get another roll on re-entry.
         ResetWindows();
     }
 
@@ -288,6 +392,20 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         _yieldUntil = 0d;
     }
 
+    private bool SelectReadAssist()
+    {
+        try
+        {
+            double roll = _nextRoll();
+            return double.IsFinite(roll) && roll >= 0d && roll < ReadAssistChance;
+        }
+        catch (Exception)
+        {
+            // An unavailable random sample must leave this whole release to Native.
+            return false;
+        }
+    }
+
     private bool HasClearSight(Agent attacker, Scene scene, Vec3 defenderEye, Vec3 attackerEye)
     {
         if (_visibility.TryGetValue(attacker, out VisibilitySample sample)
@@ -295,7 +413,9 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
             && _sampledTime - sample.Time < VisibilityCacheSeconds
             && DistanceSquared(defenderEye, sample.DefenderEye) <= VisibilityPositionToleranceSquared
             && DistanceSquared(attackerEye, sample.AttackerEye) <= VisibilityPositionToleranceSquared)
+        {
             return sample.Clear;
+        }
 
         bool clear = !scene.RayCastForClosestEntityOrTerrain(defenderEye, attackerEye, out _, 0.01f,
             BodyFlags.CommonFocusRayCastExcludeFlags);
@@ -309,7 +429,10 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
         InputSnapshot? snapshot = _snapshot;
         if (snapshot == null || Stopwatch.GetTimestamp() >= snapshot.ExpiresAt
             || (eventFlag & InterruptingEvents) != 0
-            || (movementFlag & (ExistingDefense | Agent.MovementControlFlag.Action)) != 0) return;
+            || (movementFlag & (ExistingDefense | Agent.MovementControlFlag.Action)) != 0)
+        {
+            return;
+        }
 
         // Keep translation, turning, vector and every event. Native alone
         // decides whether a previously readied attack can cancel into guard.
@@ -328,7 +451,10 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
             || (!defenseAnimation && upper is not (Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard
                 or Agent.ActionCodeType.Other or Agent.ActionCodeType.ReadyMelee))
             || stage is Agent.ActionStage.AttackRelease or Agent.ActionStage.DefendParry
-            || (upper == Agent.ActionCodeType.ReadyMelee && stage != Agent.ActionStage.AttackReady)) return false;
+            || (upper == Agent.ActionCodeType.ReadyMelee && stage != Agent.ActionStage.AttackReady))
+        {
+            return false;
+        }
 
         WeaponComponentData? main = GetUsage(defender.WieldedWeapon);
         WeaponComponentData? offhand = GetUsage(defender.WieldedOffhandWeapon);
@@ -352,14 +478,21 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
     {
         // CurrentUsageItem indexes the internal list without a bounds check.
         if (weapon.Item == null || weapon.CurrentUsageIndex < 0 || weapon.CurrentUsageIndex >= weapon.WeaponsCount)
+        {
             return null;
+        }
+
         return weapon.CurrentUsageItem;
     }
 
     private static Agent.MovementControlFlag GuardForInput(Agent.MovementControlFlag flags)
     {
         // A simultaneous guard or action may be cancelled/blocked intent.
-        if ((flags & (ExistingDefense | Agent.MovementControlFlag.Action)) != 0) return Agent.MovementControlFlag.None;
+        if ((flags & (ExistingDefense | Agent.MovementControlFlag.Action)) != 0)
+        {
+            return Agent.MovementControlFlag.None;
+        }
+
         return (flags & Agent.MovementControlFlag.AttackMask) switch
         {
             Agent.MovementControlFlag.AttackLeft => Agent.MovementControlFlag.DefendRight,
@@ -381,16 +514,27 @@ internal sealed class AdimiToolsAiArenaReadGuard : AgentComponent
 
     internal static bool IsInFrontAndReach(Vec3 delta, Vec3 attackerLook, Vec3 defenderLook, float weaponLength)
     {
-        if (!IsFinite(delta) || !IsFinite(attackerLook) || !IsFinite(defenderLook) || !float.IsFinite(weaponLength)) return false;
+        if (!IsFinite(delta) || !IsFinite(attackerLook) || !IsFinite(defenderLook) || !float.IsFinite(weaponLength))
+        {
+            return false;
+        }
+
         float horizontalSquared = delta.x * delta.x + delta.y * delta.y;
         float distanceSquared = horizontalSquared + delta.z * delta.z;
         float attackerFacingSquared = attackerLook.x * attackerLook.x + attackerLook.y * attackerLook.y;
         float defenderFacingSquared = defenderLook.x * defenderLook.x + defenderLook.y * defenderLook.y;
         if (!float.IsFinite(distanceSquared) || !float.IsFinite(attackerFacingSquared) || !float.IsFinite(defenderFacingSquared)
-            || horizontalSquared < 0.0001f || attackerFacingSquared < 0.0001f || defenderFacingSquared < 0.0001f) return false;
+            || horizontalSquared < 0.0001f || attackerFacingSquared < 0.0001f || defenderFacingSquared < 0.0001f)
+        {
+            return false;
+        }
 
         float reach = System.Math.Clamp(weaponLength, 0.4f, 2.5f) + ReachAllowance;
-        if (distanceSquared > reach * reach) return false;
+        if (distanceSquared > reach * reach)
+        {
+            return false;
+        }
+
         float attackerDot = -(delta.x * attackerLook.x + delta.y * attackerLook.y)
             / System.MathF.Sqrt(horizontalSquared * attackerFacingSquared);
         float defenderDot = (delta.x * defenderLook.x + delta.y * defenderLook.y)

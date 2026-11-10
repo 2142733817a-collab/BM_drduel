@@ -8,6 +8,8 @@ namespace AdimiDuel_Server.Duel;
 internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalculateModel
 {
     public const int SkillBonus = 50;
+    // 330 is this mode's established profile, not a documented global skill
+    // cap. It saturates Native 1.4.8's multiplayer AI-level calculation.
     public const int HardSkill = 330;
     internal const float HardMeleeReadyHoldMaximum = 0.5f;
     internal const float NormalMeleeReadyHoldMaximum = 0.25f;
@@ -129,7 +131,10 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
 
         EquipmentIndex index = agent.GetPrimaryWieldedItemIndex();
         WeaponComponentData? usage = index == EquipmentIndex.None ? null : agent.Equipment[index].CurrentUsageItem;
-        if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon) return;
+        if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon)
+        {
+            return;
+        }
 
         // Gives Native a small chance to retain a visible ready long enough
         // for a deliberate feint. It does not force every attack to be held.
@@ -170,6 +175,9 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
             return;
         }
 
+        // 330 already saturates Native's multiplayer AI-level calculation;
+        // retain modest additional Native decision floors for Hard. These
+        // are engine inputs, not per-hit block-success probabilities.
         properties.AIBlockOnDecideAbility = System.Math.Max(properties.AIBlockOnDecideAbility, 0.99f);
         properties.AIParryOnDecideAbility = System.Math.Max(properties.AIParryOnDecideAbility, 0.98f);
         properties.AIParryOnAttackingContinueAbility = System.Math.Max(properties.AIParryOnAttackingContinueAbility, 0.98f);

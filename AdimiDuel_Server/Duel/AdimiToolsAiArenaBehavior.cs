@@ -175,6 +175,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         public bool Current { get; set; } = true;
         public bool Removed { get; set; }
     }
+
     private AdimiToolsMissionMultiplayerDuel? _duelMode;
     private double _nextCheckAt;
     private double _nextBackSwingGuardWarningAt;
@@ -186,8 +187,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     public override void AfterStart()
     {
         base.AfterStart();
-        try { AdimiToolsAiLearningStore.EnsureInitialized(); }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"AI learning startup skipped: {exception.Message}"); }
+        try
+        {
+            AdimiToolsAiLearningStore.EnsureInitialized();
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"AI learning startup skipped: {exception.Message}");
+        }
+
         _duelMode = Mission.GetMissionBehavior<AdimiToolsMissionMultiplayerDuel>();
         InitializeGroups();
     }
@@ -284,20 +292,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             AdimiToolsConsoleLog.Log($"Co-op AI TK switch failed: {exception.Message}");
-            Notify(peer, "队友 TK 切换失败。");
+            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("队友 TK 切换失败。"), ordinaryChat: true);
             return true;
         }
 
         arena.FriendlyFireEnabled = enabled;
-        string message = enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。";
+        string message = AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(
+            enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。");
         if (!arena.OwnerWithdrew && arena.Session.Owner is MissionPeer owner)
         {
-            Notify(owner, message);
+            Notify(owner, message, ordinaryChat: true);
         }
 
         foreach (CoopMember member in arena.CoopMembers.Where(member => !member.Withdrew))
         {
-            Notify(member.Peer, message);
+            Notify(member.Peer, message, ordinaryChat: true);
         }
 
         return true;
@@ -465,35 +474,72 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             // Native calls OnAgentBuild before SpawnAgent completes. Attach and
             // enable once here, rather than changing callback state mid-fight.
+            // Initiative runs first so a later actual-threat guard, kick or
+            // counter can still take priority in the same input callback.
+            if (agent.GetComponent<AdimiToolsAiArenaAttackInitiative>() == null)
+            {
+                agent.AddComponent(new AdimiToolsAiArenaAttackInitiative(agent));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaBackSwingGuard>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaBackSwingGuard(agent));
+            }
+
             bool hard = agent.Origin is AdimiToolsAiArenaEnhancedOrigin { Difficulty: AdimiToolsAiArenaDifficulty.Hard };
             if (hard && agent.GetComponent<AdimiToolsAiArenaReadGuard>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaReadGuard(agent));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaParryCounter>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaParryCounter(agent));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaHitCounter>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaHitCounter(agent));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaKickPunish>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaKickPunish(agent));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaKick>() == null)
             {
                 AdimiToolsAiArenaKickPunish? kickPunish = agent.GetComponent<AdimiToolsAiArenaKickPunish>();
                 Action<double, int>? onCounterKick = kickPunish == null ? null : kickPunish.NotifyCounterKickSent;
                 agent.AddComponent(new AdimiToolsAiArenaKick(agent, onCounterKick));
             }
+
             if (agent.Origin is AdimiToolsAiArenaEnhancedOrigin { Difficulty: >= 2 }
                 && agent.GetComponent<AdimiToolsAiArenaAttackTactics>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaAttackTactics(agent));
+            }
+
             // Native and rear-swing defence run before counter/feint/combo;
             // learned selection yields whenever another component owns input.
             if (hard && agent.GetComponent<AdimiToolsAiArenaLearnedAttack>() == null)
+            {
                 agent.AddComponent(new AdimiToolsAiArenaLearnedAttack(agent,
                     agent.GetComponent<AdimiToolsAiArenaAttackTactics>(), agent.GetComponent<AdimiToolsAiArenaHitCounter>(),
                     agent.GetComponent<AdimiToolsAiArenaParryCounter>(), agent.GetComponent<AdimiToolsAiArenaKickPunish>()));
+            }
+
             if (agent.GetComponent<AdimiToolsAiArenaFootwork>() == null)
-                agent.AddComponent(new AdimiToolsAiArenaFootwork(agent));
-            if (!agent.GetHasOnAiInputSetCallback()) agent.SetHasOnAiInputSetCallback(true);
+            {
+                AdimiToolsAiArenaKick? kick = agent.GetComponent<AdimiToolsAiArenaKick>();
+                Func<bool>? hasKickProtection = kick == null ? null : kick.HasFreshProtection;
+                agent.AddComponent(new AdimiToolsAiArenaFootwork(agent, hasKickProtection));
+            }
+
+            if (!agent.GetHasOnAiInputSetCallback())
+            {
+                agent.SetHasOnAiInputSetCallback(true);
+            }
         }
 
         MissionPeer? peer = agent.MissionPeer;
@@ -621,7 +667,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             && (arena.Difficulty != difficulty || (arena.SpearCandidates != null) != spearInfantry))
         {
             string selected = arena.SpearCandidates != null ? "持矛步兵" : AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI";
-            Notify(peer, $"本次已选择{selected}，请继续敲击同一种触发物，或等本次挑战结束后再切换。");
+            Notify(peer, AdimiToolsDuelGuidanceText.GetAiSwitchNotice(
+                $"本次已选择{selected}，请继续敲击同一种触发物，或等本次挑战结束后再切换。"), ordinaryChat: true);
             return;
         }
 
@@ -684,7 +731,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (result == AdimiToolsAiArenaHitResult.MaximumReached)
         {
-            Notify(peer, $"一次最多生成 {AdimiToolsAiArenaSession<MissionPeer>.MaximumAiCount} 个 AI。");
+            Notify(peer, AdimiToolsDuelGuidanceText.GetAiSpawnLimit(AdimiToolsAiArenaSession<MissionPeer>.MaximumAiCount), ordinaryChat: true);
             return;
         }
 
@@ -816,7 +863,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             bool assignmentFailed = false;
-            try { UpdateKickAssignments(arena, running); }
+            try
+            {
+                UpdateKickAssignments(arena, running);
+            }
             catch (Exception exception)
             {
                 arena.KickAssignments.Clear();
@@ -836,8 +886,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 AdimiToolsAiArenaAttackTactics? tactics = bot.GetComponent<AdimiToolsAiArenaAttackTactics>();
                 AdimiToolsAiArenaLearnedAttack? learned = bot.GetComponent<AdimiToolsAiArenaLearnedAttack>();
                 AdimiToolsAiArenaFootwork? footwork = bot.GetComponent<AdimiToolsAiArenaFootwork>();
+                AdimiToolsAiArenaAttackInitiative? initiative = bot.GetComponent<AdimiToolsAiArenaAttackInitiative>();
                 if (guard == null)
                 {
+                    initiative?.Clear();
                     readGuard?.Clear();
                     kick?.Clear();
                     punish?.Clear();
@@ -853,10 +905,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     if (!running || _backSwingAttackers.Count == 0 || !IsLivingAgent(bot) || bot.Team != arena.BotTeam)
                     {
+                        initiative?.Clear();
                         guard.Clear();
                         readGuard?.Clear();
-                        if (assignmentFailed) kick?.PublishDuplicateKickSuppression(true);
-                        else kick?.Clear();
+                        if (assignmentFailed && AdimiToolsAiArenaAgentStatModel.KickDesire > 0f)
+                        {
+                            kick?.PublishDuplicateKickSuppression(true);
+                        }
+                        else
+                        {
+                            kick?.Clear();
+                        }
+
                         punish?.Clear();
                         parry?.Clear();
                         counter?.Clear();
@@ -870,13 +930,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     foreach (Agent attacker in _backSwingAttackers)
                     {
                         if (!YieldGuardForBlockedSwing(parry, attacker, Mission.CurrentTime))
+                        {
                             guard.ConsiderAttacker(attacker);
+                        }
                     }
 
                     guard.EndSampling();
-                    try { PublishCombatTactics(arena, bot, readGuard, kick, punish, parry, counter, tactics); }
+                    bool combatSamplingOk = true;
+                    try
+                    {
+                        PublishCombatTactics(arena, bot, readGuard, kick, punish, parry, counter, tactics);
+                    }
                     catch (Exception exception)
                     {
+                        combatSamplingOk = false;
+                        initiative?.Clear();
                         readGuard?.Clear();
                         kick?.Suspend();
                         punish?.Clear();
@@ -885,9 +953,33 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         tactics?.Clear();
                         LogCombatTacticsWarning(exception);
                     }
-                    try { PublishLearnedAttack(arena, bot, learned); }
-                    catch (Exception) { learned?.Clear(); }
-                    try { PublishFootwork(arena, bot, footwork); }
+
+                    try
+                    {
+                        if (combatSamplingOk)
+                        {
+                            PublishAttackInitiative(arena, bot, initiative);
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        initiative?.Clear();
+                        LogCombatTacticsWarning(exception);
+                    }
+
+                    try
+                    {
+                        PublishLearnedAttack(arena, bot, learned);
+                    }
+                    catch (Exception)
+                    {
+                        learned?.Clear();
+                    }
+
+                    try
+                    {
+                        PublishFootwork(arena, bot, footwork);
+                    }
                     catch (Exception exception)
                     {
                         footwork?.Clear();
@@ -896,6 +988,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }
                 catch (Exception exception)
                 {
+                    initiative?.Clear();
                     guard.Clear();
                     readGuard?.Clear();
                     kick?.Suspend();
@@ -923,15 +1016,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         foreach (Agent player in _backSwingAttackers)
         {
             // This response is only for combat between agents on foot.
-            if (player.MountAgent != null) continue;
+            if (player.MountAgent != null)
+            {
+                continue;
+            }
+
             bool kicking = IsFootworkKick(player.GetCurrentActionType(0)) || IsFootworkKick(player.GetCurrentActionType(1));
             if (!kicking && arena.KickAssignments.TryGetRecordedAssignee(player.Index, out int previousBot))
             {
                 Agent? previous = arena.Bots.FirstOrDefault(bot => bot.Index == previousBot && IsLivingAgent(bot));
                 if (previous != null && previous.MountAgent == null && ReferenceEquals(previous.GetTargetAgent(), player)
                     && previous.GetComponent<AdimiToolsAiArenaKickPunish>()?.HasPendingOrControl == true)
+                {
                     arena.KickAssignments.RetainForPending(player.Index, previousBot);
+                }
             }
+
             _kickCandidates.Clear();
             if (kicking)
             {
@@ -939,22 +1039,39 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 foreach (Agent bot in arena.Bots)
                 {
                     if (!IsLivingAgent(bot) || bot.Team != arena.BotTeam || bot.MountAgent != null
-                        || !ReferenceEquals(bot.GetTargetAgent(), player)) continue;
+                        || !ReferenceEquals(bot.GetTargetAgent(), player))
+                    {
+                        continue;
+                    }
+
                     MissionWeapon weapon = bot.WieldedWeapon;
                     WeaponComponentData? usage = weapon.IsEmpty ? null : weapon.CurrentUsageItem;
-                    if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon) continue;
+                    if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon)
+                    {
+                        continue;
+                    }
+
                     Vec3 botPosition = bot.Position;
                     float distanceSquared = (playerPosition.AsVec2 - botPosition.AsVec2).LengthSquared;
                     float length = usage.GetRealWeaponLength();
                     if (!playerPosition.IsValid || !botPosition.IsValid || !float.IsFinite(length)
                         || !float.IsFinite(distanceSquared) || distanceSquared < 0.16f
-                        || Math.Abs(playerPosition.z - botPosition.z) > 0.8f) continue;
+                        || Math.Abs(playerPosition.z - botPosition.z) > 0.8f)
+                    {
+                        continue;
+                    }
+
                     float reach = Math.Clamp(length, 0.4f, 2.5f) + 1.1f;
-                    if (distanceSquared <= reach * reach) _kickCandidates.Add((bot.Index, distanceSquared));
+                    if (distanceSquared <= reach * reach)
+                    {
+                        _kickCandidates.Add((bot.Index, distanceSquared));
+                    }
                 }
             }
+
             arena.KickAssignments.Observe(player.Index, kicking, _kickCandidates);
         }
+
         arena.KickAssignments.EndSampling();
     }
 
@@ -966,10 +1083,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // Face the player whose blow was blocked while the brief opportunity
         // exists; normal target distribution resumes afterwards.
         int parryAttacker = parry?.PendingAttackerIndex ?? -1;
-        Agent? blockedAttacker = _backSwingAttackers.FirstOrDefault(player => player.Index == parryAttacker && IsLivingAgent(player));
-        if (blockedAttacker != null && !ReferenceEquals(bot.GetTargetAgent(), blockedAttacker)
+        int counterAttacker = counter?.GetPendingAttackerIndex(Mission.CurrentTime) ?? -1;
+        int responseAttacker = parryAttacker >= 0 ? parryAttacker : counterAttacker;
+        Agent? responseTarget = _backSwingAttackers.FirstOrDefault(player => player.Index == responseAttacker && IsLivingAgent(player));
+        if (responseTarget != null && !ReferenceEquals(bot.GetTargetAgent(), responseTarget)
             && (arena.Kind is AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear) && bot.MountAgent == null)
-            bot.SetTargetAgent(blockedAttacker);
+        {
+            bot.SetTargetAgent(responseTarget);
+        }
+
         Agent? target = bot.GetTargetAgent();
         MissionWeapon weapon = bot.WieldedWeapon;
         WeaponComponentData? usage = weapon.IsEmpty ? null : weapon.CurrentUsageItem;
@@ -983,10 +1105,19 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 readGuard.BeginSampling(Mission.CurrentTime);
                 foreach (Agent attacker in _backSwingAttackers)
-                    if (!YieldGuardForBlockedSwing(parry, attacker, Mission.CurrentTime)) readGuard.ConsiderAttacker(attacker);
+                {
+                    if (!YieldGuardForBlockedSwing(parry, attacker, Mission.CurrentTime))
+                    {
+                        readGuard.ConsiderAttacker(attacker);
+                    }
+                }
+
                 readGuard.EndSampling();
             }
-            else readGuard.Clear();
+            else
+            {
+                readGuard.Clear();
+            }
         }
 
         if (!eligible || target == null || usage == null)
@@ -1012,7 +1143,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             || distanceSquared < 0.16f || distanceSquared > reach * reach || Math.Abs(position.z - targetPosition.z) > 0.8f)
         {
             counter?.Clear();
-            if (!suppressDuplicateKick) kick?.Clear();
+            if (!suppressDuplicateKick)
+            {
+                kick?.Clear();
+            }
+
             punish?.Clear();
             parry?.Clear();
             tactics?.Suspend();
@@ -1045,7 +1180,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         bool ownKicking = IsFootworkKick(upper) || IsFootworkKick(lower);
         bool enemyKicking = IsFootworkKick(target.GetCurrentActionType(0)) || IsFootworkKick(target.GetCurrentActionType(1))
             || arena.KickAssignments.IsKickOngoing(target.Index);
-        if (enemyKicking && distanceSquared <= 1.8f * 1.8f) otherThreat = true;
+        if (enemyKicking && distanceSquared <= 1.8f * 1.8f)
+        {
+            otherThreat = true;
+        }
+
         bool comboStun = bot.IsInBeingStruckAction || (IsFootworkInterrupted(upper) && !IsFootworkKick(upper))
             || (IsFootworkInterrupted(lower) && !IsFootworkKick(lower)) || stage == Agent.ActionStage.DefendParry
             || parry?.HasPendingOrControl == true || counter?.HasPendingOrControl == true;
@@ -1054,23 +1193,36 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         punish?.Observe(Mission.CurrentTime, target.Index, punishEligible, enemyKicking, ownKicking, nativeAttack,
             comboStun, otherThreat, arena.Difficulty, Random.Shared.NextDouble(), allowed, preferred);
         if (!suppressDuplicateKick)
+        {
             PublishKick(bot, target, kick, punish, parry, counter, tactics, position, targetPosition,
                 upper, lower, stage, otherThreat, Mission.CurrentTime);
+        }
 
-        if (!needsDirections) return;
+        if (!needsDirections)
+        {
+            return;
+        }
+
         parry?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated, nativeAttack, otherThreat, allowed, preferred);
-        counter?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated || defending, nativeAttack, allowed, preferred);
+        counter?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated || defending || otherThreat, nativeAttack, allowed, preferred);
 
-        if (tactics == null) return;
+        if (tactics == null)
+        {
+            return;
+        }
+
         Agent.ActionCodeType enemyAction = target.GetCurrentActionType(1);
-        bool enemyThreat = enemyAction == Agent.ActionCodeType.ReleaseMelee
+        Agent.ActionStage enemyStage = target.GetCurrentActionStage(1);
+        bool enemyHoldingAttack = enemyAction == Agent.ActionCodeType.ReadyMelee
+            && enemyStage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady;
+        bool enemyThreat = otherThreat || enemyAction == Agent.ActionCodeType.ReleaseMelee
             || IsFootworkKick(enemyAction) || IsFootworkKick(target.GetCurrentActionType(0));
         bool tacticEligible = !incapacitated && counter?.HasPendingOrControl != true && parry?.HasPendingOrControl != true
             && punish?.HasPendingOrControl != true;
         float progress = upper == Agent.ActionCodeType.ReleaseMelee ? bot.GetCurrentActionProgress(1) : 0f;
         tactics.Observe(Mission.CurrentTime, target.Index, usage, offhand.IsEmpty ? null : offhand.CurrentUsageItem,
             tacticEligible, enemyThreat, arena.Difficulty, upper, stage, bot.GetCurrentActionDirection(1), progress,
-            allowed, preferred, Random.Shared.NextDouble(), Random.Shared.NextDouble(), swing);
+            allowed, preferred, Random.Shared.NextDouble(), Random.Shared.NextDouble(), swing, enemyHoldingAttack);
     }
 
     private static bool IsMeleeRelease(Agent agent) =>
@@ -1089,11 +1241,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             bool alreadyBlocked = YieldGuardForBlockedSwing(parry, attacker, now);
             bool released = IsMeleeRelease(attacker);
             bool kicking = IsFootworkKick(attacker.GetCurrentActionType(0)) || IsFootworkKick(attacker.GetCurrentActionType(1));
-            if ((!released || alreadyBlocked) && !kicking) continue;
+            if ((!released || alreadyBlocked) && !kicking)
+            {
+                continue;
+            }
 
             Vec3 delta = attacker.Position - bot.Position;
             float distanceSquared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-            if (!float.IsFinite(distanceSquared)) return true;
+            if (!float.IsFinite(distanceSquared))
+            {
+                return true;
+            }
+
             float reach = 1.8f;
             if (released && !alreadyBlocked)
             {
@@ -1101,11 +1260,140 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 WeaponComponentData? usage = weapon.IsEmpty ? null : weapon.CurrentUsageItem;
                 float length = usage?.GetRealWeaponLength() ?? 0f;
                 if (usage?.IsMeleeWeapon == true && float.IsFinite(length))
+                {
                     reach = Math.Max(reach, Math.Clamp(length, 0.4f, 2.5f) + 0.65f);
+                }
             }
-            if (distanceSquared <= reach * reach) return true;
+
+            if (distanceSquared <= reach * reach)
+            {
+                return true;
+            }
         }
+
         return false;
+    }
+
+    private void PublishAttackInitiative(Arena arena, Agent bot, AdimiToolsAiArenaAttackInitiative? initiative)
+    {
+        if (initiative == null)
+        {
+            return;
+        }
+
+        Agent? target = bot.GetTargetAgent();
+        MissionWeapon weapon = bot.WieldedWeapon;
+        WeaponComponentData? usage = weapon.IsEmpty ? null : weapon.CurrentUsageItem;
+        if (arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
+            || bot.MountAgent != null || target == null || target.MountAgent != null
+            || !_backSwingAttackers.Contains(target) || !IsLivingAgent(target)
+            || usage?.IsMeleeWeapon != true || usage.IsRangedWeapon)
+        {
+            initiative.Clear();
+            return;
+        }
+
+        double now = Mission.CurrentTime;
+        Agent.ActionCodeType ownAction = bot.GetCurrentActionType(1);
+        Agent.ActionCodeType ownLower = bot.GetCurrentActionType(0);
+        Agent.ActionStage ownStage = bot.GetCurrentActionStage(1);
+        Agent.ActionCodeType targetAction = target.GetCurrentActionType(1);
+        Agent.ActionStage targetStage = target.GetCurrentActionStage(1);
+        bool targetReady = targetAction == Agent.ActionCodeType.ReadyMelee
+            && targetStage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady;
+        if (!targetReady)
+        {
+            // Observe the end of each held attack even when there is no
+            // current opportunity, so the next ready can be considered.
+            initiative.Observe(now, target.Index, eligible: false, targetReady: false, danger: false, busy: false,
+                arena.Difficulty, ownAction, ownStage, bot.GetCurrentActionDirection(1),
+                Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
+            return;
+        }
+
+        MissionWeapon targetWeapon = target.WieldedWeapon;
+        WeaponComponentData? targetUsage = targetWeapon.IsEmpty ? null : targetWeapon.CurrentUsageItem;
+        Vec3 position = bot.Position;
+        Vec3 targetPosition = target.Position;
+        Vec2 delta = targetPosition.AsVec2 - position.AsVec2;
+        Vec2 facing = bot.LookDirection.AsVec2;
+        float distanceSquared = delta.LengthSquared;
+        float facingSquared = facing.LengthSquared;
+        float length = usage.GetRealWeaponLength();
+        bool eligible = targetUsage?.IsMeleeWeapon == true && !targetUsage.IsRangedWeapon
+            && position.IsValid && targetPosition.IsValid && float.IsFinite(distanceSquared)
+            && float.IsFinite(facingSquared) && float.IsFinite(length) && distanceSquared >= 0.16f
+            && facingSquared >= 0.25f && Math.Abs(position.z - targetPosition.z) <= 0.8f;
+        if (eligible)
+        {
+            float reach = Math.Clamp(length, 0.4f, 2.5f) + 0.65f;
+            float facingDot = (delta.x * facing.x + delta.y * facing.y) / System.MathF.Sqrt(distanceSquared * facingSquared);
+            eligible = distanceSquared <= reach * reach && float.IsFinite(facingDot) && facingDot > 0.5f;
+        }
+
+        if (eligible)
+        {
+            Vec3 observerEye = bot.GetEyeGlobalPosition();
+            Vec3 targetEye = target.GetEyeGlobalPosition();
+            if (!observerEye.IsValid || !targetEye.IsValid)
+            {
+                eligible = false;
+            }
+            else if (initiative.TryGetCachedSight(now, target.Index, observerEye, targetEye, out bool clear))
+            {
+                eligible = clear;
+            }
+            else
+            {
+                bool unobstructed = !Mission.Scene.RayCastForClosestEntityOrTerrain(observerEye, targetEye, out _, 0.01f,
+                    BodyFlags.CommonFocusRayCastExcludeFlags);
+                initiative.RememberSight(now, target.Index, observerEye, targetEye, unobstructed);
+                eligible = unobstructed;
+            }
+        }
+
+        AdimiToolsAiArenaParryCounter? parry = bot.GetComponent<AdimiToolsAiArenaParryCounter>();
+        bool danger = HasIncomingMeleeThreat(bot, parry, now);
+        if (!danger)
+        {
+            // A second arena participant aiming or firing a ranged weapon is
+            // not the melee opening being contested. Do not replace Native's
+            // defensive input while such an additional threat is observed.
+            foreach (Agent other in _backSwingAttackers)
+            {
+                if (ReferenceEquals(other, target))
+                {
+                    continue;
+                }
+
+                Agent.ActionCodeType action = other.GetCurrentActionType(1);
+                if (action is Agent.ActionCodeType.ReadyRanged or Agent.ActionCodeType.ReleaseRanged
+                    or Agent.ActionCodeType.ReleaseThrowing)
+                {
+                    danger = true;
+                    break;
+                }
+            }
+        }
+
+        bool busy = bot.IsInBeingStruckAction || IsFootworkInterrupted(ownAction) || IsFootworkInterrupted(ownLower)
+            || ownStage == Agent.ActionStage.DefendParry || parry?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaKick>()?.HasFreshOpportunityOrProtection() == true
+            || bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.OwnsAttackInput == true;
+        Agent.MovementControlFlag allowed = Agent.MovementControlFlag.None;
+        Agent.MovementControlFlag preferred = Agent.MovementControlFlag.None;
+        if (eligible && !danger && !busy)
+        {
+            bool leftStance = bot.GetIsLeftStance();
+            MissionWeapon offhand = bot.WieldedOffhandWeapon;
+            (allowed, _) = GetMeleeAttackDirections(usage, offhand, leftStance);
+            preferred = PreferredMeleeSide(position, targetPosition, facing, leftStance);
+        }
+
+        initiative.Observe(now, target.Index, eligible, targetReady, danger, busy, arena.Difficulty,
+            ownAction, ownStage, bot.GetCurrentActionDirection(1), allowed, preferred);
     }
 
     private static void PublishKick(Agent bot, Agent target, AdimiToolsAiArenaKick? kick, AdimiToolsAiArenaKickPunish? punish,
@@ -1113,7 +1401,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         Vec3 position, Vec3 targetPosition, Agent.ActionCodeType upper, Agent.ActionCodeType lower,
         Agent.ActionStage stage, bool incomingThreat, double now)
     {
-        if (kick == null) return;
+        if (kick == null)
+        {
+            return;
+        }
+
         float kickDesire = AdimiToolsAiArenaAgentStatModel.KickDesire;
         if (kickDesire <= 0f)
         {
@@ -1130,22 +1422,38 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             kick.Clear();
             return;
         }
+
         float distance = System.MathF.Sqrt(distanceSquared);
         float facingDot = (delta.x * facing.x + delta.y * facing.y) / System.MathF.Sqrt(distanceSquared * facingSquared);
-        bool busy = bot.IsInBeingStruckAction || IsFootworkInterrupted(upper) || IsFootworkInterrupted(lower)
-            || upper is not (Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard or Agent.ActionCodeType.Other)
-            || stage != Agent.ActionStage.None;
         bool counterOpportunity = punish?.WantsCounterKick(target.Index) == true;
+        int upperType = (int)upper;
+        bool regularGuard = upperType >= (int)Agent.ActionCodeType.DefendAllBegin
+            && upperType < (int)Agent.ActionCodeType.DefendAllEnd && stage == Agent.ActionStage.Defend;
+        // A safe kick opportunity may yield a normal held guard. The input
+        // component also checks a short-lived snapshot and only clears an
+        // unambiguous guard; incoming threats cancel subsequent snapshots.
+        bool allowGuardCancellation = regularGuard && !incomingThreat;
+        bool busy = bot.IsInBeingStruckAction || IsFootworkInterrupted(upper) || IsFootworkInterrupted(lower)
+            || (!allowGuardCancellation && upper is not (Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard or Agent.ActionCodeType.Other))
+            || (!allowGuardCancellation && stage != Agent.ActionStage.None);
         bool counterPending = parry?.HasPendingOrControl == true || counter?.HasPendingOrControl == true
             || tactics?.OwnsAttackInput == true || (punish?.HasPendingOrControl == true && !counterOpportunity);
         bool kickClear = false;
         if (distance <= AdimiToolsAiArenaKick.MaxDistance && !busy && !incomingThreat && !counterPending)
         {
-            try { kickClear = bot.KickClear(); }
-            catch (Exception) { /* A kick probe must not disable the rest of combat. */ }
+            try
+            {
+                kickClear = bot.KickClear();
+            }
+            catch (Exception)
+            { /* A kick probe must not disable the rest of combat. */
+            }
         }
+
         kick.Observe(now, target.Index, eligible: true, distance, facingDot, targetPosition.z - position.z,
-            kickClear, busy, incomingThreat, counterPending, Random.Shared.NextDouble(), kickDesire, counterOpportunity);
+            kickClear, busy, incomingThreat, counterPending, Random.Shared.NextDouble(), kickDesire, counterOpportunity,
+            ownUpper: upper, ownLower: lower, ownStruck: bot.IsInBeingStruckAction,
+            allowGuardCancellation: allowGuardCancellation);
     }
 
     private (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing) GetMeleeAttackDirections(
@@ -1153,9 +1461,16 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         string? mainUsage = usage.ItemUsage;
         string? offhandUsage = offhand.IsEmpty ? string.Empty : offhand.CurrentUsageItem?.ItemUsage;
-        if (string.IsNullOrEmpty(mainUsage) || offhandUsage == null) return (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
+        if (string.IsNullOrEmpty(mainUsage) || offhandUsage == null)
+        {
+            return (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
+        }
+
         var key = (mainUsage, offhandUsage, leftStance);
-        if (_meleeDirections.TryGetValue(key, out var cached)) return cached;
+        if (_meleeDirections.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
 
         // Invalid usage names must never be passed to GetItemUsageStrikeType:
         // the native implementation assumes an already valid usage index.
@@ -1171,7 +1486,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 // look vector. Only choose directions valid in both cases.
                 int normalLook = MBItem.GetItemUsageStrikeType(mainUsage, direction, false, offhandIndex, leftStance, false);
                 int lowLook = MBItem.GetItemUsageStrikeType(mainUsage, direction, false, offhandIndex, leftStance, true);
-                if (normalLook < 0 || lowLook < 0) continue;
+                if (normalLook < 0 || lowLook < 0)
+                {
+                    continue;
+                }
+
                 Agent.MovementControlFlag flag = direction switch
                 {
                     0 => Agent.MovementControlFlag.AttackUp,
@@ -1180,7 +1499,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     _ => Agent.MovementControlFlag.AttackRight,
                 };
                 result |= flag;
-                if (normalLook == (int)StrikeType.Swing && lowLook == (int)StrikeType.Swing) swing |= flag;
+                if (normalLook == (int)StrikeType.Swing && lowLook == (int)StrikeType.Swing)
+                {
+                    swing |= flag;
+                }
             }
         }
 
@@ -1195,8 +1517,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             Vec2 delta = target.AsVec2 - position.AsVec2;
             float side = (delta.x * look.y - delta.y * look.x) / System.MathF.Sqrt(lengthSquared);
-            if (side > 0.35f) return Agent.MovementControlFlag.AttackRight;
-            if (side < -0.35f) return Agent.MovementControlFlag.AttackLeft;
+            if (side > 0.35f)
+            {
+                return Agent.MovementControlFlag.AttackRight;
+            }
+
+            if (side < -0.35f)
+            {
+                return Agent.MovementControlFlag.AttackLeft;
+            }
         }
 
         return leftStance ? Agent.MovementControlFlag.AttackRight : Agent.MovementControlFlag.AttackLeft;
@@ -1204,7 +1533,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private void PublishFootwork(Arena arena, Agent bot, AdimiToolsAiArenaFootwork? footwork)
     {
-        if (footwork == null) return;
+        if (footwork == null)
+        {
+            return;
+        }
+
         Agent? target = bot.GetTargetAgent();
         MissionWeapon weapon = bot.WieldedWeapon;
         WeaponComponentData? usage = weapon.IsEmpty ? null : weapon.CurrentUsageItem;
@@ -1246,22 +1579,51 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // walking past one player just to reach the currently selected target.
         if (!counterApproach && position.IsValid && targetPosition.IsValid && _backSwingAttackers.Count > 1)
         {
+            // Start from the prior live spacing reference, not the combat
+            // target on every tick. The same distance margin then applies in
+            // both directions and small changes cannot restart each step.
+            Agent? previous = _backSwingAttackers.FirstOrDefault(player => player.Index == footwork.SpacingTargetIndex);
+            if (previous != null && IsLivingAgent(previous) && previous.Position.IsValid
+                && Math.Abs(position.z - previous.Position.z) <= 0.8f)
+            {
+                spacingTarget = previous;
+                targetPosition = previous.Position;
+            }
+
             float closestSquared = (targetPosition.AsVec2 - position.AsVec2).LengthSquared;
             foreach (Agent candidate in _backSwingAttackers)
             {
-                if (ReferenceEquals(candidate, spacingTarget) || !IsLivingAgent(candidate)) continue;
+                if (ReferenceEquals(candidate, spacingTarget) || !IsLivingAgent(candidate))
+                {
+                    continue;
+                }
+
                 Vec3 candidatePosition = candidate.Position;
                 float candidateSquared = (candidatePosition.AsVec2 - position.AsVec2).LengthSquared;
                 if (!candidatePosition.IsValid || !float.IsFinite(candidateSquared)
-                    || Math.Abs(position.z - candidatePosition.z) > 0.8f) continue;
+                    || Math.Abs(position.z - candidatePosition.z) > 0.8f)
+                {
+                    continue;
+                }
+
                 // A small margin prevents switching back and forth over tiny
                 // measurement differences when two opponents are nearby.
-                if (candidateSquared + 0.25f >= closestSquared) continue;
+                if (candidateSquared + 0.25f >= closestSquared)
+                {
+                    continue;
+                }
+
                 spacingTarget = candidate;
                 targetPosition = candidatePosition;
                 closestSquared = candidateSquared;
             }
         }
+
+        if (!counterApproach)
+        {
+            footwork.RememberSpacingTarget(spacingTarget.Index);
+        }
+
         Vec2 delta = targetPosition.AsVec2 - position.AsVec2;
         float distanceSquared = delta.LengthSquared;
         if (!position.IsValid || !targetPosition.IsValid || !float.IsFinite(distanceSquared) || distanceSquared < 0.0001f
@@ -1280,13 +1642,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         float lateral;
         if (counterApproach)
         {
-            if (!footwork.MayStartCounterApproach(now)) return;
-            if (distance <= 1.05f) { footwork.Suspend(); return; }
+            if (!footwork.MayStartCounterApproach(now))
+            {
+                return;
+            }
+
+            if (distance <= 1.05f)
+            {
+                footwork.Suspend();
+                return;
+            }
+
             toward = arena.Difficulty switch { 1 => 0.52f, 2 => 0.62f, _ => 0.72f };
             lateral = 0f;
         }
         else if (!footwork.TryPlan(now, bot.Index, spacingTarget.Index, distance, usage.GetRealWeaponLength(),
-                     out toward, out lateral, incomingKick, arena.Difficulty)) return;
+                     out toward, out lateral, incomingKick, arena.Difficulty))
+        {
+            return;
+        }
+
         Vec2 bodyForward = bot.Frame.rotation.f.AsVec2;
         Vec2 viewForward = bot.LookDirection.AsVec2;
         if (!float.IsFinite(bodyForward.LengthSquared) || !float.IsFinite(viewForward.LengthSquared)
@@ -1317,12 +1692,20 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         Vec2 direction = worldMove * (1f / worldLength);
-        float checkDistance = counterApproach ? Math.Clamp(distance - 1f, 0.2f, 0.8f) : 1f;
+        // A fixed 1 m look-ahead can overshoot the opponent's body buffer for
+        // short weapons and reject every otherwise safe closing step. Check a
+        // bounded nearer segment while closing; the snapshot and safety check
+        // remain short-lived and Native still owns the final collision.
+        float checkDistance = counterApproach ? Math.Clamp(distance - 1f, 0.2f, 0.8f)
+            : toward > 0f ? Math.Clamp(distance - 0.8f, 0.35f, 1f) : 1f;
         if (footwork.NeedsSafetyCheck(now, spacingTarget.Index, direction.x, direction.y, checkDistance))
         {
             bool safe = IsFootworkPathSafe(arena, bot, position, direction, checkDistance);
             footwork.ReportSafety(now, spacingTarget.Index, direction.x, direction.y, safe, checkDistance);
-            if (!safe) return;
+            if (!safe)
+            {
+                return;
+            }
         }
 
         Vec2 bodyRight = new(bodyForward.y, -bodyForward.x);
@@ -1358,53 +1741,93 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         Vec3 destination = position + new Vec3(direction.x * distance, direction.y * distance, 0f);
         if (arena.Area != null && (!arena.Area.IsPointIn(destination)
             || !arena.Area.IsPointIn(position + new Vec3(left.x * distance, left.y * distance, 0f))
-            || !arena.Area.IsPointIn(position + new Vec3(right.x * distance, right.y * distance, 0f)))) return false;
+            || !arena.Area.IsPointIn(position + new Vec3(right.x * distance, right.y * distance, 0f))))
+        {
+            return false;
+        }
 
         // Check both ends: the native straight-line method can otherwise return
         // true in a scene with no navigation mesh.
         if (bot.GetWorldPosition().GetNavMesh() == UIntPtr.Zero
             || Mission.Scene.GetNavigationMeshForPosition(in destination, out _, Scene.NavMeshHeightLimit, excludeDynamicNavigationMeshes: false) == UIntPtr.Zero)
+        {
             return false;
+        }
+
         WorldPosition world = new(Mission.Scene, destination);
-        if (world.GetNavMesh() == UIntPtr.Zero) return false;
+        if (world.GetNavMesh() == UIntPtr.Zero)
+        {
+            return false;
+        }
+
         Vec3 ground = world.GetNavMeshVec3();
         Vec2 destination2D = destination.AsVec2;
         PathFaceRecord face = PathFaceRecord.NullFaceRecord;
         Mission.Scene.GetNavMeshFaceIndex(ref face, destination, checkIfDisabled: true);
         if (!ground.IsValid || !face.IsValid() || Math.Abs(ground.z - position.z) > 0.5f
             || (ground.AsVec2 - destination2D).LengthSquared > 0.04f
-            || !bot.CanMoveDirectlyToPosition(in destination2D)) return false;
+            || !bot.CanMoveDirectlyToPosition(in destination2D))
+        {
+            return false;
+        }
 
         const float minimumActorDistanceSquared = 0.65f * 0.65f;
         foreach (Agent other in arena.Bots)
+        {
             if (!ReferenceEquals(other, bot) && IsLivingAgent(other)
                 && IsNearFootworkPath(other.Position, position, ground, minimumActorDistanceSquared))
+            {
                 return false;
+            }
+        }
+
         foreach (Agent other in _backSwingAttackers)
+        {
             if (IsLivingAgent(other) && IsNearFootworkPath(other.Position, position, ground, minimumActorDistanceSquared))
+            {
                 return false;
+            }
+        }
+
         return true;
     }
 
     private static bool IsNearFootworkPath(Vec3 other, Vec3 start, Vec3 end, float minimumDistanceSquared)
     {
-        if (!other.IsValid || Math.Abs(other.z - start.z) > 1f) return false;
+        if (!other.IsValid || Math.Abs(other.z - start.z) > 1f)
+        {
+            return false;
+        }
+
         Vec2 segment = end.AsVec2 - start.AsVec2;
         float lengthSquared = segment.LengthSquared;
-        if (!float.IsFinite(lengthSquared) || lengthSquared < 0.0001f) return true;
+        if (!float.IsFinite(lengthSquared) || lengthSquared < 0.0001f)
+        {
+            return true;
+        }
+
         Vec2 relative = other.AsVec2 - start.AsVec2;
         float dot = relative.x * segment.x + relative.y * segment.y;
         // If an actor is already inside the buffer, allow a step which moves
         // away from them; otherwise a close kick would make retreat impossible.
-        if (relative.LengthSquared < minimumDistanceSquared && dot < -0.001f) return false;
+        if (relative.LengthSquared < minimumDistanceSquared && dot < -0.001f)
+        {
+            return false;
+        }
+
         float projection = Math.Clamp(dot / lengthSquared, 0f, 1f);
         return (relative - segment * projection).LengthSquared < minimumDistanceSquared;
     }
 
     private void PublishLearnedAttack(Arena arena, Agent bot, AdimiToolsAiArenaLearnedAttack? learned)
     {
-        if (learned == null) return;
-        if (bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.OwnsAttackInput == true
+        if (learned == null)
+        {
+            return;
+        }
+
+        if (bot.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.OwnsAttackInput == true
             || bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaParryCounter>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.HasPendingOrControl == true)
@@ -1464,7 +1887,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
                     bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
                 }
-                catch (Exception) { /* Teardown must continue if clearing fails. */ }
+                catch (Exception)
+                { /* Teardown must continue if clearing fails. */
+                }
             }
         }
     }
@@ -1476,16 +1901,30 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             FinishLearning(arena, null, interrupted: true);
             var participants = new List<AdimiToolsAiLearningCapture.Participant>
             {
-                new(ownerAgent.Index, true, LearningToken(owner))
+                new(ownerAgent.Index, true, LearningToken(owner)),
             };
             foreach (CoopMember member in arena.CoopMembers)
+            {
                 participants.Add(new(member.Agent.Index, true, LearningToken(member.Peer)));
+            }
+
             foreach (Agent bot in arena.Bots.Where(IsLivingAgent))
+            {
                 participants.Add(new(bot.Index, false, string.Empty));
+            }
+
             arena.LearningAgents.Clear();
             arena.LearningAgents.Add(ownerAgent.Index, ownerAgent);
-            foreach (CoopMember member in arena.CoopMembers) arena.LearningAgents.Add(member.Agent.Index, member.Agent);
-            foreach (Agent bot in arena.Bots.Where(IsLivingAgent)) arena.LearningAgents.Add(bot.Index, bot);
+            foreach (CoopMember member in arena.CoopMembers)
+            {
+                arena.LearningAgents.Add(member.Agent.Index, member.Agent);
+            }
+
+            foreach (Agent bot in arena.Bots.Where(IsLivingAgent))
+            {
+                arena.LearningAgents.Add(bot.Index, bot);
+            }
+
             var capture = new AdimiToolsAiLearningCapture(arena.Id, (int)arena.Kind, arena.Difficulty, Mission.CurrentTime, participants);
             arena.Learning = capture;
             foreach (int id in capture.ActorIds)
@@ -1498,10 +1937,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         mountCollision.Capture.Invalidate();
                     }
                 }
+
                 if (!_learningActors.TryAdd(id, capture))
                 {
                     capture.Invalidate();
-                    if (_learningActors.TryGetValue(id, out AdimiToolsAiLearningCapture? other)) other.Invalidate();
+                    if (_learningActors.TryGetValue(id, out AdimiToolsAiLearningCapture? other))
+                    {
+                        other.Invalidate();
+                    }
                 }
             }
         }
@@ -1520,13 +1963,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
             _learningTokens.Add(peer, token);
         }
+
         return token;
     }
 
     private void SampleLearning(Arena arena)
     {
         AdimiToolsAiLearningCapture? capture = arena.Learning;
-        if (capture == null) return;
+        if (capture == null)
+        {
+            return;
+        }
+
         try
         {
             if (_ending || _sceneClearing || arena.Resetting || arena.RoundPending
@@ -1536,19 +1984,36 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 capture.Invalidate();
                 return;
             }
+
             ValidateLearningPlayers(arena, capture);
             double now = Mission.CurrentTime;
-            if (!capture.ShouldSample(now)) return;
+            if (!capture.ShouldSample(now))
+            {
+                return;
+            }
+
             var actors = new List<AdimiToolsAiLearningActor>();
-            if (arena.OwnerAgent != null) AddLearningActor(capture, arena.OwnerAgent, actors);
-            foreach (CoopMember member in arena.CoopMembers) AddLearningActor(capture, member.Agent, actors);
+            if (arena.OwnerAgent != null)
+            {
+                AddLearningActor(capture, arena.OwnerAgent, actors);
+            }
+
+            foreach (CoopMember member in arena.CoopMembers)
+            {
+                AddLearningActor(capture, member.Agent, actors);
+            }
+
             foreach (Agent bot in arena.Bots)
             {
                 if (capture.TryGetParticipant(bot.Index, out _)
                     && (!arena.LearningAgents.TryGetValue(bot.Index, out Agent? initial) || !ReferenceEquals(initial, bot)))
+                {
                     capture.Invalidate();
+                }
+
                 AddLearningActor(capture, bot, actors);
             }
+
             capture.AddFrame(now, actors);
         }
         catch (Exception)
@@ -1559,10 +2024,23 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
     private void AddLearningActor(AdimiToolsAiLearningCapture capture, Agent agent, List<AdimiToolsAiLearningActor> actors)
     {
-        if (!capture.TryGetParticipant(agent.Index, out var participant) || capture.IsRemoved(agent.Index)) return;
-        if (!IsLivingAgent(agent)) { capture.Invalidate(); return; }
+        if (!capture.TryGetParticipant(agent.Index, out var participant) || capture.IsRemoved(agent.Index))
+        {
+            return;
+        }
+
+        if (!IsLivingAgent(agent))
+        {
+            capture.Invalidate();
+            return;
+        }
+
         int mountVersion;
-        lock (_learningMountGate) mountVersion = _learningMountVersions.GetValueOrDefault(agent.Index);
+        lock (_learningMountGate)
+        {
+            mountVersion = _learningMountVersions.GetValueOrDefault(agent.Index);
+        }
+
         Vec3 position = agent.Position;
         Vec3 look = agent.LookDirection;
         Vec3 velocity = agent.GetRealGlobalVelocity();
@@ -1596,26 +2074,53 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             mountHealthLimit = mount.HealthLimit;
         }
 
-        if (!RegisterLearningMount(capture, agent.Index, mount?.Index ?? -1, mountVersion)) return;
+        if (!RegisterLearningMount(capture, agent.Index, mount?.Index ?? -1, mountVersion))
+        {
+            return;
+        }
 
         actors.Add(new AdimiToolsAiLearningActor
         {
-            Id = participant.Id, IsPlayer = participant.IsPlayer, Side = participant.IsPlayer ? 0 : 1, PlayerToken = participant.Token,
+            Id = participant.Id,
+            IsPlayer = participant.IsPlayer,
+            Side = participant.IsPlayer ? 0 : 1,
+            PlayerToken = participant.Token,
             CharacterId = agent.Character?.StringId ?? string.Empty,
             WeaponId = weapon.IsEmpty || weapon.Item is not ItemObject item ? string.Empty : item.StringId ?? string.Empty,
             WeaponClass = weapon.IsEmpty ? string.Empty : weapon.CurrentUsageItem?.WeaponClass.ToString() ?? string.Empty,
-            X = position.x, Y = position.y, Z = position.z,
-            LookX = look.x, LookY = look.y, LookZ = look.z,
-            VelocityX = velocity.x, VelocityY = velocity.y, MoveInputX = moveInput.x, MoveInputY = moveInput.y,
-            Health = agent.Health, HealthLimit = agent.HealthLimit,
-            IsMounted = mount != null, MountId = mount?.Index ?? -1,
-            MountX = mountPosition.x, MountY = mountPosition.y, MountZ = mountPosition.z,
-            MountLookX = mountLook.x, MountLookY = mountLook.y, MountLookZ = mountLook.z,
-            MountVelocityX = mountVelocity.x, MountVelocityY = mountVelocity.y, MountInputX = mountInput.x, MountInputY = mountInput.y,
-            MountHealth = mountHealth, MountHealthLimit = mountHealthLimit, WeaponLength = weaponLength,
-            ActionType = (int)agent.GetCurrentActionType(1), ActionStage = (int)agent.GetCurrentActionStage(1),
-            ActionDirection = (int)agent.GetCurrentActionDirection(1), ActionProgress = agent.GetCurrentActionProgress(1),
-            MovementFlags = (uint)agent.MovementFlags, EventFlags = (uint)agent.EventControlFlags
+            X = position.x,
+            Y = position.y,
+            Z = position.z,
+            LookX = look.x,
+            LookY = look.y,
+            LookZ = look.z,
+            VelocityX = velocity.x,
+            VelocityY = velocity.y,
+            MoveInputX = moveInput.x,
+            MoveInputY = moveInput.y,
+            Health = agent.Health,
+            HealthLimit = agent.HealthLimit,
+            IsMounted = mount != null,
+            MountId = mount?.Index ?? -1,
+            MountX = mountPosition.x,
+            MountY = mountPosition.y,
+            MountZ = mountPosition.z,
+            MountLookX = mountLook.x,
+            MountLookY = mountLook.y,
+            MountLookZ = mountLook.z,
+            MountVelocityX = mountVelocity.x,
+            MountVelocityY = mountVelocity.y,
+            MountInputX = mountInput.x,
+            MountInputY = mountInput.y,
+            MountHealth = mountHealth,
+            MountHealthLimit = mountHealthLimit,
+            WeaponLength = weaponLength,
+            ActionType = (int)agent.GetCurrentActionType(1),
+            ActionStage = (int)agent.GetCurrentActionStage(1),
+            ActionDirection = (int)agent.GetCurrentActionDirection(1),
+            ActionProgress = agent.GetCurrentActionProgress(1),
+            MovementFlags = (uint)agent.MovementFlags,
+            EventFlags = (uint)agent.EventControlFlags,
         });
     }
 
@@ -1623,12 +2128,17 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         lock (_learningMountGate)
         {
-            if (capture.HasEnded) return false;
+            if (capture.HasEnded)
+            {
+                return false;
+            }
+
             if (!_learningActors.TryGetValue(riderId, out AdimiToolsAiLearningCapture? active) || !ReferenceEquals(active, capture))
             {
                 capture.Invalidate();
                 return false;
             }
+
             if (_learningMountVersions.GetValueOrDefault(riderId) != version)
             {
                 capture.Invalidate();
@@ -1644,7 +2154,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
             if (mountId < 0)
             {
-                if (_learningMountPending.Contains(riderId)) capture.Invalidate();
+                if (_learningMountPending.Contains(riderId))
+                {
+                    capture.Invalidate();
+                }
+
                 return !_learningMountPending.Contains(riderId);
             }
 
@@ -1663,12 +2177,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     existing.Capture.Invalidate();
                     return false;
                 }
+
                 if (!ReferenceEquals(existing.Capture, capture) || (existing.Current && existing.RiderId != riderId))
                 {
                     capture.Invalidate();
                     existing.Capture.Invalidate();
                     return false;
                 }
+
                 if (existing.RiderId == riderId)
                 {
                     existing.Current = true;
@@ -1678,7 +2194,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }
             }
 
-            if (!capture.RegisterMount(mountId)) return false;
+            if (!capture.RegisterMount(mountId))
+            {
+                return false;
+            }
+
             var binding = new LearningMountBinding { Capture = capture, RiderId = riderId, MountId = mountId };
             _learningMounts[mountId] = binding;
             _learningMountsByRider[riderId] = binding;
@@ -1690,18 +2210,31 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     private void FinishLearning(Arena arena, bool? playerWon, bool interrupted)
     {
         AdimiToolsAiLearningCapture? capture = arena.Learning;
-        if (capture == null) return;
+        if (capture == null)
+        {
+            return;
+        }
+
         arena.Learning = null;
         try
         {
             if (playerWon.HasValue)
             {
-                try { ValidateLearningPlayers(arena, capture); }
-                catch (Exception) { capture.Invalidate(); }
+                try
+                {
+                    ValidateLearningPlayers(arena, capture);
+                }
+                catch (Exception)
+                {
+                    capture.Invalidate();
+                }
             }
+
             AdimiToolsAiLearningEpisode? episode = capture.Finish(Mission.CurrentTime, playerWon, interrupted);
             if (episode != null && !AdimiToolsAiLearningStore.TryEnqueue(episode))
+            {
                 AdimiToolsConsoleLog.Log("AI learning capture was not queued; round was not saved.");
+            }
         }
         catch (Exception exception)
         {
@@ -1712,12 +2245,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             lock (_learningMountGate)
             {
                 foreach (int mountId in _learningMounts.Where(pair => ReferenceEquals(pair.Value.Capture, capture)).Select(pair => pair.Key).ToArray())
+                {
                     _learningMounts.Remove(mountId);
+                }
+
                 foreach (int riderId in capture.ActorIds)
                 {
                     if (_learningMountsByRider.TryGetValue(riderId, out LearningMountBinding? binding)
                         && ReferenceEquals(binding.Capture, capture))
+                    {
                         _learningMountsByRider.Remove(riderId);
+                    }
+
                     if (_learningActors.TryGetValue(riderId, out AdimiToolsAiLearningCapture? current)
                         && ReferenceEquals(current, capture))
                     {
@@ -1726,11 +2265,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     }
                 }
             }
+
             foreach (int id in capture.ActorIds)
             {
                 if (_learningActors.TryGetValue(id, out AdimiToolsAiLearningCapture? current) && ReferenceEquals(current, capture))
+                {
                     _learningActors.TryRemove(id, out _);
+                }
             }
+
             arena.LearningAgents.Clear();
         }
     }
@@ -1740,25 +2283,37 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         if (withdrew || peer == null || agent == null || peer.GetNetworkPeer()?.IsConnectionActive != true
             || (!capture.IsRemoved(agent.Index) && !ReferenceEquals(peer.ControlledAgent, agent))
             || (capture.IsRemoved(agent.Index) && peer.ControlledAgent != null && !ReferenceEquals(peer.ControlledAgent, agent)))
+        {
             capture.Invalidate();
+        }
     }
 
     private static void ValidateLearningPlayers(Arena arena, AdimiToolsAiLearningCapture capture)
     {
         ValidateLearningPeer(capture, arena.Session.Owner, arena.OwnerAgent, arena.OwnerWithdrew);
         if (arena.OwnerAgent != null && (!arena.LearningAgents.TryGetValue(arena.OwnerAgent.Index, out Agent? owner)
-            || !ReferenceEquals(owner, arena.OwnerAgent))) capture.Invalidate();
+            || !ReferenceEquals(owner, arena.OwnerAgent)))
+        {
+            capture.Invalidate();
+        }
+
         foreach (CoopMember member in arena.CoopMembers)
         {
             ValidateLearningPeer(capture, member.Peer, member.Agent, member.Withdrew);
             if (!arena.LearningAgents.TryGetValue(member.Agent.Index, out Agent? initial) || !ReferenceEquals(initial, member.Agent))
+            {
                 capture.Invalidate();
+            }
         }
     }
 
     private void AbortAllLearning()
     {
-        foreach (Arena arena in _arenas.Values) FinishLearning(arena, null, interrupted: true);
+        foreach (Arena arena in _arenas.Values)
+        {
+            FinishLearning(arena, null, interrupted: true);
+        }
+
         _learningActors.Clear();
         lock (_learningMountGate)
         {
@@ -1767,6 +2322,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             _learningMountVersions.Clear();
             _learningMountPending.Clear();
         }
+
         _learningTokens.Clear();
     }
 
@@ -2001,9 +2557,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // A blocked first swing cannot be used to manufacture a combo.
         if (isBlocked && attacker != null)
         {
-            try { attacker.GetComponent<AdimiToolsAiArenaAttackTactics>()?.NotifyAttackBlocked(); }
-            catch (Exception) { /* The original hit processing must continue. */ }
+            try
+            {
+                attacker.GetComponent<AdimiToolsAiArenaAttackTactics>()?.NotifyAttackBlocked();
+            }
+            catch (Exception)
+            { /* The original hit processing must continue. */
+            }
         }
+
         AdimiToolsAiLearningCapture? learningCapture = null;
         AdimiToolsAiLearningCapture? attackerCapture = null;
         try
@@ -2019,9 +2581,17 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     && (victimMount == null ? !learningCapture.IsRemoved(victimId) : !victimMount.Removed);
                 if (!lateMissile)
                 {
-                    if (learningCapture?.HasEnded == true) learningCapture = null;
-                    if (attackerCapture?.HasEnded == true) attackerCapture = null;
+                    if (learningCapture?.HasEnded == true)
+                    {
+                        learningCapture = null;
+                    }
+
+                    if (attackerCapture?.HasEnded == true)
+                    {
+                        attackerCapture = null;
+                    }
                 }
+
                 if (learningCapture != null && attackerCapture != null && !ReferenceEquals(learningCapture, attackerCapture))
                 {
                     learningCapture.Invalidate();
@@ -2031,27 +2601,35 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     if (HasPendingLearningMount(learningCapture) || (victimMount != null && victimMount.Removed)
                         || (attackerMount != null && (!attackerMount.Current || attackerMount.Removed)))
+                    {
                         learningCapture.Invalidate();
+                    }
+
                     if (victimMount != null)
+                    {
                         learningCapture.RecordMountHit(Mission.CurrentTime, attackerId, attackerParticipant, victimId, isBlocked, damagedHp,
                             collisionData.IsMissile, (int)collisionData.AttackDirection, collisionData.AttackProgress, collisionData.StrikeType, collisionData.ThrustTipHit,
                             attackerWeapon?.WeaponClass.ToString() ?? string.Empty, collisionData.IsAlternativeAttack);
+                    }
                     else
+                    {
                         learningCapture.RecordHit(Mission.CurrentTime, attackerId, victimId, isBlocked, damagedHp, attackerParticipant,
                             collisionData.IsMissile, (int)collisionData.AttackDirection, collisionData.AttackProgress, collisionData.StrikeType, collisionData.ThrustTipHit,
                             attackerWeapon?.WeaponClass.ToString() ?? string.Empty, collisionData.IsAlternativeAttack);
+                    }
                 }
-                else attackerCapture?.Invalidate();
+                else
+                {
+                    attackerCapture?.Invalidate();
+                }
             }
         }
-        catch (Exception) { learningCapture?.Invalidate(); attackerCapture?.Invalidate(); /* Never affect combat. */ }
-
-        if (!_ending && !_sceneClearing && attacker != null && !isSiegeEngineHit
-            && !collisionData.IsMissile && collisionData.IsAlternativeAttack && blow.AttackType == AgentAttackType.Kick)
+        catch (Exception)
         {
-            try { NotifyKickContact(victim, attacker, isBlocked); }
-            catch (Exception) { /* Native combat and hit processing remain authoritative. */ }
+            learningCapture?.Invalidate();
+            attackerCapture?.Invalidate(); /* Never affect combat. */
         }
+
         if (!isBlocked && float.IsFinite(damagedHp) && damagedHp > 0f)
         {
             try
@@ -2060,8 +2638,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 // opponent or a ranged hit caused the damage this frame.
                 victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
                 victim.GetComponent<AdimiToolsAiArenaKick>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
             }
-            catch (Exception) { /* Damage and native reaction remain authoritative. */ }
+            catch (Exception)
+            { /* Damage and native reaction remain authoritative. */
+            }
+        }
+
+        if (!_ending && !_sceneClearing && attacker != null && !isSiegeEngineHit
+            && !collisionData.IsMissile && collisionData.IsAlternativeAttack && blow.AttackType == AgentAttackType.Kick)
+        {
+            // Record contact after damage cancels the victim's old response;
+            // otherwise Clear() would erase the very kick that just landed
+            // and its animation could later be misclassified as a missed kick.
+            try
+            {
+                NotifyKickContact(victim, attacker, isBlocked);
+            }
+            catch (Exception)
+            { /* Native combat and hit processing remain authoritative. */
+            }
         }
 
         // Only an actual blocked hostile melee blow opens a parry counter.
@@ -2081,26 +2677,42 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     || arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena))
                     || !arena.Bots.Contains(victim) || !validAttacker
                     || arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
-                    || victim.MountAgent != null) continue;
+                    || victim.MountAgent != null)
+                {
+                    continue;
+                }
+
                 try
                 {
                     MissionWeapon defenderWeapon = victim.WieldedWeapon;
                     WeaponComponentData? defenderUsage = defenderWeapon.IsEmpty ? null : defenderWeapon.CurrentUsageItem;
-                    if (defenderUsage?.IsMeleeWeapon != true || defenderUsage.IsRangedWeapon) break;
+                    if (defenderUsage?.IsMeleeWeapon != true || defenderUsage.IsRangedWeapon)
+                    {
+                        break;
+                    }
+
                     victim.GetComponent<AdimiToolsAiArenaBackSwingGuard>()?.Suspend();
                     victim.GetComponent<AdimiToolsAiArenaReadGuard>()?.Suspend();
+                    victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
                     victim.GetComponent<AdimiToolsAiArenaKick>()?.Suspend();
                     victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
                     victim.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
                     victim.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Suspend();
                     victim.GetComponent<AdimiToolsAiArenaLearnedAttack>()?.Clear();
                     victim.GetComponent<AdimiToolsAiArenaParryCounter>()?.RecordParry(Mission.CurrentTime, attacker.Index, blow.DefenderStunPeriod);
-                    if (arena.IsCoop) arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                    if (arena.IsCoop)
+                    {
+                        arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                    }
                 }
-                catch (Exception) { /* Native combat and score processing remain authoritative. */ }
+                catch (Exception)
+                { /* Native combat and score processing remain authoritative. */
+                }
+
                 break;
             }
         }
+
         if (_ending || isBlocked || !float.IsFinite(damagedHp) || damagedHp <= 0f || attacker == null)
         {
             return;
@@ -2111,7 +2723,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             if (!arena.Resetting && !arena.RoundPending && arena.Session.State == AdimiToolsAiArenaState.Running && arena.Bots.Contains(victim)
                 && (ReferenceEquals(arena.OwnerAgent, attacker) || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, attacker))))
             {
-                if (arena.IsCoop) arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                if (arena.IsCoop)
+                {
+                    arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                }
+
                 bool validAttacker = IsLivingAgent(attacker) && attacker.Team == arena.PlayerTeam && victim.Team == arena.BotTeam
                     && arena.PlayerTeam != arena.BotTeam
                     && ((ReferenceEquals(arena.OwnerAgent, attacker) && !arena.OwnerWithdrew)
@@ -2131,12 +2747,60 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
                         victim.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
                         victim.GetComponent<AdimiToolsAiArenaAttackTactics>()?.NotifyReceivedHit(Mission.CurrentTime);
-                        victim.GetComponent<AdimiToolsAiArenaHitCounter>()?.RecordHit(Mission.CurrentTime, attacker.Index);
+                        victim.GetComponent<AdimiToolsAiArenaHitCounter>()?.RecordHit(Mission.CurrentTime, attacker.Index, blow.DefenderStunPeriod);
                     }
-                    catch (Exception) { /* Damage and existing hit processing remain authoritative. */ }
+                    catch (Exception)
+                    { /* Damage and existing hit processing remain authoritative. */
+                    }
                 }
+
                 return;
             }
+        }
+    }
+
+    // The ordinary OnScoreHit route can omit a zero-inflicted-damage blow.
+    // Native still dispatches this melee collision after RegisterBlow for a
+    // body hit. Only cover that missing path here: positive-damage and blocked
+    // contacts remain handled by OnScoreHit, avoiding duplicate notifications.
+    public override void OnMeleeHit(Agent attacker, Agent victim, bool isCanceled, AttackCollisionData collisionData)
+    {
+        if (_ending || _sceneClearing || attacker == null || victim == null || collisionData.IsMissile
+            || collisionData.InflictedDamage != 0
+            || collisionData.CollisionResult != CombatCollisionResult.StrikeAgent)
+        {
+            return;
+        }
+
+        try
+        {
+            // A zero-damage body collision can still interrupt a ready attack.
+            // Withdraw a previously published initiative immediately rather
+            // than waiting for the next mission-thread animation sample.
+            if (!isCanceled && !collisionData.AttackBlockedWithShield && !collisionData.CollidedWithShieldOnBack)
+            {
+                victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
+            }
+
+            if (!collisionData.IsAlternativeAttack)
+            {
+                return;
+            }
+
+            // Match Native CreateMeleeBlow: an alternative attack without an
+            // affector weapon is a kick; a weapon/shield bash must not count.
+            int slot = collisionData.AffectorWeaponSlotOrMissileIndex;
+            if (slot >= (int)EquipmentIndex.NumAllWeaponSlots
+                || (slot >= 0 && !attacker.Equipment[(EquipmentIndex)slot].IsEmpty))
+            {
+                return;
+            }
+
+            bool blocked = isCanceled || collisionData.AttackBlockedWithShield || collisionData.CollidedWithShieldOnBack;
+            NotifyKickContact(victim, attacker, blocked);
+        }
+        catch (Exception)
+        { /* Native combat and hit processing remain authoritative. */
         }
     }
 
@@ -2146,7 +2810,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             if (arena.Resetting || arena.RoundPending || arena.Session.State != AdimiToolsAiArenaState.Running
                 || arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena))
-                || arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)) continue;
+                || arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear))
+            {
+                continue;
+            }
 
             bool attackerPlayer = (ReferenceEquals(arena.OwnerAgent, attacker) && !arena.OwnerWithdrew)
                 || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, attacker) && !member.Died && !member.Withdrew);
@@ -2164,12 +2831,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     punish?.NotifyEnemyKickContact(Mission.CurrentTime, attacker.Index);
                     bot.GetComponent<AdimiToolsAiArenaKick>()?.CancelCounterOpportunity(attacker.Index);
                     if (wasApproaching || ReferenceEquals(bot, victim))
+                    {
                         bot.GetComponent<AdimiToolsAiArenaFootwork>()?.Suspend();
+                    }
                 }
             }
             else if (attackerBot && victimPlayer && !isBlocked && attacker.MountAgent == null && victim.MountAgent == null)
             {
-                attacker.GetComponent<AdimiToolsAiArenaKickPunish>()?.NotifyOwnKickContact(Mission.CurrentTime, victim.Index);
+                double now = Mission.CurrentTime;
+                if (attacker.GetComponent<AdimiToolsAiArenaKickPunish>()?.NotifyOwnKickContact(now, victim.Index) == true)
+                {
+                    attacker.GetComponent<AdimiToolsAiArenaKick>()?.NotifyCounterKickContact(now, victim.Index);
+                }
             }
         }
     }
@@ -2178,19 +2851,29 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         // This only withdraws a managed snapshot; leave engine mutations to
         // the existing mission-tick cleanup below.
-        try { affectedAgent.GetComponent<AdimiToolsAiArenaFootwork>()?.Suspend(); }
-        catch (Exception) { /* Removal must continue if a component is unavailable. */ }
+        try
+        {
+            affectedAgent.GetComponent<AdimiToolsAiArenaFootwork>()?.Suspend();
+        }
+        catch (Exception)
+        { /* Removal must continue if a component is unavailable. */
+        }
+
         try
         {
             affectedAgent.GetComponent<AdimiToolsAiArenaBackSwingGuard>()?.Suspend();
             affectedAgent.GetComponent<AdimiToolsAiArenaReadGuard>()?.Suspend();
+            affectedAgent.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
             affectedAgent.GetComponent<AdimiToolsAiArenaKick>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
         }
-        catch (Exception) { /* Removal must continue if a component is unavailable. */ }
+        catch (Exception)
+        { /* Removal must continue if a component is unavailable. */
+        }
+
         AdimiToolsAiLearningCapture? learningCapture = null;
         AdimiToolsAiLearningCapture? attackerCapture = null;
         try
@@ -2203,18 +2886,32 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 attackerCapture = FindLearningParty(attackerId, out int attackerParticipant, out LearningMountBinding? attackerMount);
                 if (victimMount?.Removed == true || (victimMount != null && learningCapture?.HasEnded == true))
                 {
-                    if (victimMount != null) { victimMount.Removed = true; victimMount.Current = false; }
+                    if (victimMount != null)
+                    {
+                        victimMount.Removed = true;
+                        victimMount.Current = false;
+                    }
                 }
                 else if (learningCapture != null && attackerCapture != null && !ReferenceEquals(learningCapture, attackerCapture))
                 {
-                    if (!learningCapture.HasEnded) learningCapture.Invalidate();
-                    if (!attackerCapture.HasEnded) attackerCapture.Invalidate();
+                    if (!learningCapture.HasEnded)
+                    {
+                        learningCapture.Invalidate();
+                    }
+
+                    if (!attackerCapture.HasEnded)
+                    {
+                        attackerCapture.Invalidate();
+                    }
                 }
                 else if (learningCapture != null)
                 {
                     if (HasPendingLearningMount(learningCapture)
                         || (attackerMount != null && (!attackerMount.Current || attackerMount.Removed)))
+                    {
                         learningCapture.Invalidate();
+                    }
+
                     if (victimMount != null)
                     {
                         learningCapture.RecordMountRemoval(Mission.CurrentTime, attackerId, attackerParticipant, victimId, agentState);
@@ -2222,14 +2919,27 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         victimMount.Current = false;
                         if (_learningMountsByRider.TryGetValue(victimMount.RiderId, out LearningMountBinding? riderMount)
                             && ReferenceEquals(riderMount, victimMount))
+                        {
                             _learningMountsByRider.Remove(victimMount.RiderId);
+                        }
                     }
-                    else learningCapture.RecordRemoval(Mission.CurrentTime, attackerId, victimId, agentState, attackerParticipant);
+                    else
+                    {
+                        learningCapture.RecordRemoval(Mission.CurrentTime, attackerId, victimId, agentState, attackerParticipant);
+                    }
                 }
-                else if (attackerCapture?.HasEnded != true) attackerCapture?.Invalidate();
+                else if (attackerCapture?.HasEnded != true)
+                {
+                    attackerCapture?.Invalidate();
+                }
             }
         }
-        catch (Exception) { learningCapture?.Invalidate(); attackerCapture?.Invalidate(); /* The existing removal handling must still run. */ }
+        catch (Exception)
+        {
+            learningCapture?.Invalidate();
+            attackerCapture?.Invalidate(); /* The existing removal handling must still run. */
+        }
+
         // Defer all engine mutations to OnMissionTick, outside native removal callbacks.
         foreach (Arena arena in _arenas.Values)
         {
@@ -2280,13 +2990,20 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 if (_learningActors.TryGetValue(shooterId, out capture))
                 {
-                    if (HasPendingLearningMount(capture)) capture.Invalidate();
+                    if (HasPendingLearningMount(capture))
+                    {
+                        capture.Invalidate();
+                    }
+
                     capture.RecordShot(Mission.CurrentTime, shooterId, (int)weaponIndex, position.x, position.y, position.z,
                         velocity.x, velocity.y, velocity.z);
                 }
             }
         }
-        catch (Exception) { capture?.Invalidate(); }
+        catch (Exception)
+        {
+            capture?.Invalidate();
+        }
     }
 
     private void RecordLearningMountTransition(Agent agent, bool mounted)
@@ -2299,7 +3016,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 if (_learningActors.TryGetValue(id, out capture))
                 {
-                    if (capture.HasEnded) return;
+                    if (capture.HasEnded)
+                    {
+                        return;
+                    }
+
                     capture.RecordMountTransition(Mission.CurrentTime, id, mounted);
                     _learningMountVersions[id] = _learningMountVersions.GetValueOrDefault(id) + 1;
                     if (_learningMountsByRider.TryGetValue(id, out LearningMountBinding? prior))
@@ -2307,12 +3028,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         prior.Current = false;
                         _learningMountsByRider.Remove(id);
                     }
-                    if (mounted) _learningMountPending.Add(id);
-                    else _learningMountPending.Remove(id);
+
+                    if (mounted)
+                    {
+                        _learningMountPending.Add(id);
+                    }
+                    else
+                    {
+                        _learningMountPending.Remove(id);
+                    }
                 }
             }
         }
-        catch (Exception) { capture?.Invalidate(); }
+        catch (Exception)
+        {
+            capture?.Invalidate();
+        }
     }
 
     // Called only while _learningMountGate is held. No native object access.
@@ -2324,11 +3055,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             participantId = id;
             return capture;
         }
+
         if (_learningMounts.TryGetValue(id, out mount))
         {
             participantId = mount.Current && !mount.Removed ? mount.RiderId : -1;
             return mount.Capture;
         }
+
         participantId = -1;
         return null;
     }
@@ -2345,16 +3078,25 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             {
                 if (_learningActors.TryGetValue(affectedAgent.Index, out AdimiToolsAiLearningCapture? actorCapture)
                     && !actorCapture.IsRemoved(affectedAgent.Index) && !actorCapture.HasEnded)
+                {
                     actorCapture.Invalidate();
+                }
+
                 if (_learningMounts.TryGetValue(affectedAgent.Index, out LearningMountBinding? mount) && !mount.Removed)
                 {
-                    if (!mount.Capture.HasEnded) mount.Capture.Invalidate();
+                    if (!mount.Capture.HasEnded)
+                    {
+                        mount.Capture.Invalidate();
+                    }
+
                     mount.Removed = true;
                     mount.Current = false;
                 }
             }
         }
-        catch (Exception) { /* Recording never changes the existing deletion path. */ }
+        catch (Exception)
+        { /* Recording never changes the existing deletion path. */
+        }
     }
 
     public override void OnClearScene()
@@ -3836,9 +4578,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         int requiredCount = forPlayerRespawn ? 1 : arena.Session.RequestedCount;
         Vec3[] occupiedPositions = Mission.Agents.Where(IsLivingAgent).Select(agent => agent.Position).ToArray();
         var offsets = from x in Enumerable.Range(-4, 9)
-                       from y in Enumerable.Range(-4, 9)
-                       orderby x * x + y * y, y, x
-                       select (x, y);
+                      from y in Enumerable.Range(-4, 9)
+                      orderby x * x + y * y, y, x
+                      select (x, y);
         foreach (var (x, y) in offsets)
         {
             Vec2 offset = (right * x + forward * y) * spacing;

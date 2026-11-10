@@ -41,7 +41,11 @@ internal sealed class AdimiToolsAiArenaKickAssignment
 
         // A mission clock reset invalidates every old player and lock, while
         // allowing the current valid sample to start a fresh episode.
-        if (_hasTime && now < _lastTime) Clear();
+        if (_hasTime && now < _lastTime)
+        {
+            Clear();
+        }
+
         _now = now;
         _lastTime = now;
         _hasTime = true;
@@ -51,7 +55,11 @@ internal sealed class AdimiToolsAiArenaKickAssignment
 
     public void Observe(int playerIndex, bool kicking, IReadOnlyList<(int BotIndex, float DistanceSquared)> candidates)
     {
-        if (!_sampling || playerIndex < 0 || !_observed.Add(playerIndex)) return;
+        if (!_sampling || playerIndex < 0 || !_observed.Add(playerIndex))
+        {
+            return;
+        }
+
         if (!_players.TryGetValue(playerIndex, out PlayerState? state))
         {
             state = new PlayerState();
@@ -65,7 +73,11 @@ internal sealed class AdimiToolsAiArenaKickAssignment
             bool sameKick = state.HasKick && _now <= state.KickEndedAt + ShortGapSeconds;
             // A genuinely new kick gets exactly one selection, including the
             // no-candidate outcome. Late arrivals cannot claim an old kick.
-            if (!sameKick) state.BotIndex = ChooseClosest(playerIndex, candidates);
+            if (!sameKick)
+            {
+                state.BotIndex = ChooseClosest(playerIndex, candidates);
+            }
+
             state.Kicking = true;
             state.HasKick = true;
             state.LockedUntil = 0d;
@@ -88,13 +100,27 @@ internal sealed class AdimiToolsAiArenaKickAssignment
 
     public void EndSampling()
     {
-        if (!_sampling) return;
+        if (!_sampling)
+        {
+            return;
+        }
+
         // Players not sampled in this arena have died, left, withdrawn, or
         // otherwise ceased to be eligible; stale locks must not survive.
         _unobserved.Clear();
         foreach (int player in _players.Keys)
-            if (!_observed.Contains(player)) _unobserved.Add(player);
-        foreach (int player in _unobserved) _players.Remove(player);
+        {
+            if (!_observed.Contains(player))
+            {
+                _unobserved.Add(player);
+            }
+        }
+
+        foreach (int player in _unobserved)
+        {
+            _players.Remove(player);
+        }
+
         _sampling = false;
     }
 
@@ -118,7 +144,10 @@ internal sealed class AdimiToolsAiArenaKickAssignment
     {
         botIndex = -1;
         if (!_players.TryGetValue(playerIndex, out PlayerState? state) || !IsActive(state) || state.BotIndex < 0)
+        {
             return false;
+        }
+
         botIndex = state.BotIndex;
         return true;
     }
@@ -131,7 +160,10 @@ internal sealed class AdimiToolsAiArenaKickAssignment
         botIndex = -1;
         if (!_sampling || _observed.Contains(playerIndex)
             || !_players.TryGetValue(playerIndex, out PlayerState? state) || !state.HasKick || state.BotIndex < 0)
+        {
             return false;
+        }
+
         botIndex = state.BotIndex;
         return true;
     }
@@ -144,11 +176,22 @@ internal sealed class AdimiToolsAiArenaKickAssignment
         if (!_sampling || _observed.Contains(playerIndex) || botIndex < 0
             || !_players.TryGetValue(playerIndex, out PlayerState? state) || !state.HasKick
             || state.BotIndex != botIndex || state.Kicking || _now <= state.KickEndedAt + ShortGapSeconds)
+        {
             return false;
+        }
+
         double limit = state.KickEndedAt + MaximumLockAfterKickSeconds;
-        if (_now >= limit) return false;
+        if (_now >= limit)
+        {
+            return false;
+        }
+
         double retainedUntil = Math.Min(_now + PendingRetainSeconds, limit);
-        if (retainedUntil > state.LockedUntil) state.LockedUntil = retainedUntil;
+        if (retainedUntil > state.LockedUntil)
+        {
+            state.LockedUntil = retainedUntil;
+        }
+
         return true;
     }
 
@@ -167,19 +210,28 @@ internal sealed class AdimiToolsAiArenaKickAssignment
 
     private static int ChooseClosest(int playerIndex, IReadOnlyList<(int BotIndex, float DistanceSquared)> candidates)
     {
-        if (candidates == null) return -1;
+        if (candidates == null)
+        {
+            return -1;
+        }
+
         int selected = -1;
         float closest = float.PositiveInfinity;
         for (int i = 0; i < candidates.Count; i++)
         {
             (int botIndex, float distanceSquared) = candidates[i];
-            if (botIndex < 0 || botIndex == playerIndex || !float.IsFinite(distanceSquared) || distanceSquared < 0f) continue;
+            if (botIndex < 0 || botIndex == playerIndex || !float.IsFinite(distanceSquared) || distanceSquared < 0f)
+            {
+                continue;
+            }
+
             if (distanceSquared < closest || (distanceSquared == closest && (selected < 0 || botIndex < selected)))
             {
                 selected = botIndex;
                 closest = distanceSquared;
             }
         }
+
         return selected;
     }
 }

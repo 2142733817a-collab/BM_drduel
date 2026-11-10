@@ -429,7 +429,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.NextFriendlyFireToggleAt = Mission.CurrentTime + 0.5d;
         if (!inCombat && arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
         {
-            Notify(peer, "本场名单已锁定，无法切换队友伤害。");
+            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("本场名单已锁定，无法切换队友伤害。"), ordinaryChat: true);
             return;
         }
 
@@ -442,16 +442,16 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             {
                 SetTeamSelfHostility(arena.TeamA!, arena.TeamB!, arena.FriendlyFireEnabled, failures);
                 AdimiToolsConsoleLog.Log($"Team TK switch failed: {new AggregateException(failures).Message}");
-                Notify(peer, "队友 TK 切换失败。");
+                Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("队友 TK 切换失败。"), ordinaryChat: true);
                 return;
             }
         }
 
         arena.FriendlyFireEnabled = enabled;
-        string notice = enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。";
+        string notice = AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。");
         foreach (MissionPeer recipient in GetSelectorRecipients(arena, peer, inCombat))
         {
-            Notify(recipient, notice);
+            Notify(recipient, notice, ordinaryChat: true);
         }
     }
 
@@ -485,10 +485,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.NextModeToggleAt = Mission.CurrentTime + 0.5d;
         arena.TargetWins = AdimiToolsDuelModes.GetNextLimit(arena.TargetWins);
         arena.Series?.SetTargetWins(arena.TargetWins);
-        string notice = $"此对局赛制已切换为{AdimiToolsDuelModes.GetModeName(arena.TargetWins)}。";
+        string notice = AdimiToolsDuelGuidanceText.GetTeamModeSelection(AdimiToolsDuelModes.GetModeName(arena.TargetWins));
         foreach (MissionPeer recipient in GetSelectorRecipients(arena, peer, inCombat))
         {
-            Notify(recipient, notice);
+            Notify(recipient, notice, ordinaryChat: true);
         }
 
         return true;
@@ -852,7 +852,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             var peer = agent.MissionPeer!;
             arena.Members.Add(peer, new Member
             {
-                Peer = peer, Agent = agent, OriginalTeam = peer.Team!, SideA = a.Contains(agent),
+                Peer = peer,
+                Agent = agent,
+                OriginalTeam = peer.Team!,
+                SideA = a.Contains(agent),
                 Mount = IsLiving(agent.MountAgent) ? agent.MountAgent : null,
                 MountTeam = IsLiving(agent.MountAgent) ? agent.MountAgent!.Team : null,
                 Character = new AgentBuildData(agent.Character).BodyProperties(agent.BodyPropertiesValue)
@@ -951,9 +954,15 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             return;
         }
 
-        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, sideAWon.HasValue ? (sideAWon.Value ? 0 : 1) : null,
-            interrupted: !sideAWon.HasValue || arena.Members.Values.Any(member => member.Withdrawn)); }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning end skipped: {exception.Message}"); }
+        try
+        {
+            Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, sideAWon.HasValue ? (sideAWon.Value ? 0 : 1) : null,
+            interrupted: !sideAWon.HasValue || arena.Members.Values.Any(member => member.Withdrawn));
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"Team PvP learning end skipped: {exception.Message}");
+        }
 
         bool complete = arena.Series.RecordRound(sideAWon);
         if (complete)
@@ -1259,8 +1268,14 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     private void AbortLearningRound(Arena arena)
     {
-        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, null, interrupted: true); }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning cancel skipped: {exception.Message}"); }
+        try
+        {
+            Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, null, interrupted: true);
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"Team PvP learning cancel skipped: {exception.Message}");
+        }
     }
 
     private void BeginLearningRound(Arena arena)
@@ -1271,7 +1286,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 .Select(member => new AdimiToolsPvpLearningBehavior.Member(member.Peer, member.Agent, member.SideA ? 0 : 1)).ToArray();
             Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Begin(arena, "team_pvp", arena.Id, members);
         }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning start skipped: {exception.Message}"); }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"Team PvP learning start skipped: {exception.Message}");
+        }
     }
 
     private void FinishCleanup(Arena arena, double now)
@@ -1753,7 +1771,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 AdimiToolsSharedArena duelBoundary = AdimiToolsSharedArena.For(Mission, area.Box);
                 var arena = new Arena
                 {
-                    Id = area.Id, SideA = sideA, SideB = sideB, Area = area.Box,
+                    Id = area.Id,
+                    SideA = sideA,
+                    SideB = sideB,
+                    Area = area.Box,
                     Shared = area.Shared,
                     DuelBoundary = duelBoundary,
                     Barriers = barriers,

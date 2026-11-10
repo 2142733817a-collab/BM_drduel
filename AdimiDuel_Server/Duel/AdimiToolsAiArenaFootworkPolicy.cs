@@ -70,7 +70,11 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
             || distance < MinimumDistance || distance > Math.Clamp(weaponLength + 1.1f, 2.1f, 3.3f))
         {
             _kickSeenAt = -1d;
-            if (!incomingKick) _kickResponded = false;
+            if (!incomingKick)
+            {
+                _kickResponded = false;
+            }
+
             EndStep(now);
             return false;
         }
@@ -95,7 +99,10 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
 
         // A kick can interrupt an ordinary pause, but must never bypass a
         // rejected path's safety cooldown.
-        if (now < _unsafeRetryUntil) return false;
+        if (now < _unsafeRetryUntil)
+        {
+            return false;
+        }
 
         if (kickInRange && !_kickResponded && now - _kickSeenAt >= _kickReactionDelay)
         {
@@ -152,7 +159,13 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
         }
         else if (distance > upperDistance)
         {
-            toward = _approachMagnitude * Math.Clamp((distance - upperDistance) / 0.45f, 0f, 1f);
+            // Do not keep orbiting outside our estimated reach. As the gap
+            // grows, smoothly trade lateral input for forward input, leaving
+            // Native free to close the last bit and decide whether to attack.
+            float gapFactor = Math.Clamp((distance - upperDistance) / 0.35f, 0f, 1f);
+            toward = _approachMagnitude * gapFactor;
+            lateral = _currentSide * _lateralMagnitude * (1f - 0.65f * gapFactor);
+            return true;
         }
 
         lateral = _currentSide * _lateralMagnitude;
@@ -216,7 +229,7 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
                 _kickReactionDelay = 0.20d;
                 _lateralMagnitude = 0.58f;
                 _retreatMagnitude = 0.35f;
-                _approachMagnitude = 0.22f;
+                _approachMagnitude = 0.42f;
                 _evadeRetreatMagnitude = 0.40f;
                 _evadeLateralMagnitude = 0.40f;
                 break;
@@ -226,7 +239,7 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
                 _kickReactionDelay = 0.10d;
                 _lateralMagnitude = 0.70f;
                 _retreatMagnitude = 0.45f;
-                _approachMagnitude = 0.28f;
+                _approachMagnitude = 0.52f;
                 _evadeRetreatMagnitude = 0.55f;
                 _evadeLateralMagnitude = 0.53f;
                 break;
@@ -236,7 +249,7 @@ internal sealed class AdimiToolsAiArenaFootworkPolicy
                 _kickReactionDelay = 0d;
                 _lateralMagnitude = 0.82f;
                 _retreatMagnitude = 0.55f;
-                _approachMagnitude = 0.35f;
+                _approachMagnitude = 0.62f;
                 _evadeRetreatMagnitude = 0.70f;
                 _evadeLateralMagnitude = 0.65f;
                 break;

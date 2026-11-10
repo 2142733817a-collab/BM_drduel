@@ -66,6 +66,7 @@ internal sealed class AdimiToolsAiArenaLearnedAttack : AgentComponent
                 _latched = false;
                 _chosen = Agent.MovementControlFlag.None;
             }
+
             _observedRelease = releasing;
             _enabled = true;
             _allowNewAttack = allowNewAttack;
@@ -90,7 +91,11 @@ internal sealed class AdimiToolsAiArenaLearnedAttack : AgentComponent
         ref Vec2 inputVector)
     {
         if (_tactics?.OwnsAttackInput == true || _counter?.HasPendingOrControl == true
-            || _parry?.HasPendingOrControl == true || _punish?.HasPendingOrControl == true) return;
+            || _parry?.HasPendingOrControl == true || _punish?.HasPendingOrControl == true)
+        {
+            return;
+        }
+
         lock (_gate)
         {
             if (!_enabled)

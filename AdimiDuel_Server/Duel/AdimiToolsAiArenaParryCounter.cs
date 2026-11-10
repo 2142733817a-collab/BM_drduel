@@ -47,7 +47,10 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
     private double _blockedAt;
     private long _blockedSwingExpiresAt;
 
-    public AdimiToolsAiArenaParryCounter(Agent agent) : base(agent) { }
+    public AdimiToolsAiArenaParryCounter(Agent agent)
+        : base(agent)
+    {
+    }
 
     // The caller must filter a real hostile melee Blocked/Parried collision;
     // chamber attacks, kicks, missiles and unrelated agents are not parries.
@@ -65,12 +68,16 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
             }
 
             if (_suppressBlockedSwing && now - _blockedAt >= OpportunitySeconds)
+            {
                 ClearSuppressionLocked();
+            }
 
             // Multiple collision callbacks for the same still-releasing swing
             // are not additional opportunities and cannot extend deadlines.
             if (_suppressBlockedSwing && attackerIndex == _blockedAttackerIndex)
+            {
                 return;
+            }
 
             float boundedStun = float.IsFinite(defenderStunSeconds)
                 ? Math.Clamp(defenderStunSeconds, 0f, MaximumStunSeconds)
@@ -106,7 +113,11 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
         {
             long clock = Stopwatch.GetTimestamp();
             PruneLocked(clock);
-            if (!_pending) return;
+            if (!_pending)
+            {
+                return;
+            }
+
             if (!double.IsFinite(now) || now < _lastObservedAt || now - _parryAt >= OpportunitySeconds
                 || !eligible || targetIndex != _attackerIndex)
             {
@@ -150,12 +161,26 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
 
     public bool HasPendingOrControl
     {
-        get { lock (_gate) { PruneLocked(Stopwatch.GetTimestamp()); return _pending; } }
+        get
+        {
+            lock (_gate)
+            {
+                PruneLocked(Stopwatch.GetTimestamp());
+                return _pending;
+            }
+        }
     }
 
     public int PendingAttackerIndex
     {
-        get { lock (_gate) { PruneLocked(Stopwatch.GetTimestamp()); return _pending ? _attackerIndex : -1; } }
+        get
+        {
+            lock (_gate)
+            {
+                PruneLocked(Stopwatch.GetTimestamp());
+                return _pending ? _attackerIndex : -1;
+            }
+        }
     }
 
     // Call for the blocked attacker on every sample, including false once its
@@ -166,20 +191,28 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
         lock (_gate)
         {
             PruneLocked(Stopwatch.GetTimestamp());
-            if (!_suppressBlockedSwing || attackerIndex != _blockedAttackerIndex) return false;
+            if (!_suppressBlockedSwing || attackerIndex != _blockedAttackerIndex)
+            {
+                return false;
+            }
+
             if (!double.IsFinite(now) || now < _blockedAt || now - _blockedAt >= OpportunitySeconds
                 || !sameSwingReleasing)
             {
                 ClearSuppressionLocked();
                 return false;
             }
+
             return true;
         }
     }
 
     public void Clear()
     {
-        lock (_gate) ClearLocked();
+        lock (_gate)
+        {
+            ClearLocked();
+        }
     }
 
     public override void OnAIInputSet(ref Agent.EventControlFlag eventFlag, ref Agent.MovementControlFlag movementFlag,
@@ -189,7 +222,11 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
         {
             long clock = Stopwatch.GetTimestamp();
             PruneLocked(clock);
-            if (!_pending) return;
+            if (!_pending)
+            {
+                return;
+            }
+
             if ((eventFlag & InterruptingEvents) != 0 || (movementFlag & Agent.MovementControlFlag.Action) != 0)
             {
                 ClearLocked();
@@ -226,9 +263,14 @@ internal sealed class AdimiToolsAiArenaParryCounter : AgentComponent
     private void PruneLocked(long clock)
     {
         if (_pending && (clock >= _opportunityExpiresAt || (_attackStarted && clock >= _attackExpiresAt)))
+        {
             ClearCounterLocked();
+        }
+
         if (_suppressBlockedSwing && clock >= _blockedSwingExpiresAt)
+        {
             ClearSuppressionLocked();
+        }
     }
 
     private static long AddMilliseconds(long clock, long milliseconds)

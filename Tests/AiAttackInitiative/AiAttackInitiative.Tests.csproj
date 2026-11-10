@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- These intentionally minimal engine stubs use Bannerlord's lowercase
+         vector fields and enum layout; compile checks remain warnings-as-errors. -->
+    <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../AdimiDuel_Server/Duel/AdimiToolsAiArenaAttackInitiative.cs" Link="AdimiToolsAiArenaAttackInitiative.cs" />
+  </ItemGroup>
+</Project>

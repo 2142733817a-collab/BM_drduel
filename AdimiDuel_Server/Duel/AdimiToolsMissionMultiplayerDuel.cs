@@ -1758,8 +1758,15 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     private void CancelRestartDuel(DuelInfo duel)
     {
-        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(duel, null, interrupted: true); }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning cancel skipped: {exception.Message}"); }
+        try
+        {
+            Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(duel, null, interrupted: true);
+        }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"PvP learning cancel skipped: {exception.Message}");
+        }
+
         // Release the old series without deciding another round or touching
         // cached dead/deleted actors through the normal EndDuel path.
         _duelRequests.Remove(duel);
@@ -1863,13 +1870,18 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             Agent? requester = duel.RequesterPeer.ControlledAgent;
             Agent? requestee = duel.RequesteePeer.ControlledAgent;
             if (requester != null && requestee != null)
+            {
                 Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Begin(duel, "pvp", duel.DuelAreaIndex, new[]
                 {
                     new AdimiToolsPvpLearningBehavior.Member(duel.RequesterPeer, requester, 0),
                     new AdimiToolsPvpLearningBehavior.Member(duel.RequesteePeer, requestee, 1),
                 });
+            }
         }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning start skipped: {exception.Message}"); }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"PvP learning start skipped: {exception.Message}");
+        }
     }
 
     private void EndDuel(DuelInfo duel)
@@ -1882,7 +1894,11 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
             int? side = ReferenceEquals(learningWinner, duel.RequesterPeer) ? 0 : ReferenceEquals(learningWinner, duel.RequesteePeer) ? 1 : null;
             Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(duel, side, interrupted: !duel.IsDuelStillValid(doNotCheckAgent: true));
         }
-        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning end skipped: {exception.Message}"); }
+        catch (Exception exception)
+        {
+            AdimiToolsConsoleLog.Log($"PvP learning end skipped: {exception.Message}");
+        }
+
         if (duel.ChallengeEnded)
         {
             TroopType troopType = TroopType.Invalid;

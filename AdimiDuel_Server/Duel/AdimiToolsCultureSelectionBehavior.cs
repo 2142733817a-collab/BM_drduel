@@ -143,14 +143,15 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         }
 
         _pending[peer] = new PendingSwitch(agent, culture!, Mission.CurrentTime + 3d);
-        string countryName = AdimiToolsDuelGuidanceText.Highlight(GetCultureName(culture!));
+        string countryName = AdimiToolsDuelGuidanceText.Escape(GetCultureName(culture!));
+        string seconds = AdimiToolsDuelGuidanceText.Highlight("3");
         if (cycle)
         {
-            Notify(network, $"3秒后切换至{countryName}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
+            Notify(network, $"{seconds}秒后切换至{countryName}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
         }
         else
         {
-            Notify(network, $"3秒后切换至{countryName}。\n再次挥砍可重新选择并计时。", playSound: true);
+            Notify(network, $"{seconds}秒后切换至{countryName}。\n再次挥砍可重新选择并计时。", playSound: true);
         }
     }
 
@@ -250,7 +251,7 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
             spawning.RequestClassSelection(peer);
         }
 
-        Notify(network, $"已切换至{AdimiToolsDuelGuidanceText.Highlight(GetCultureName(culture))}，请选择兵种并重生。");
+        Notify(network, $"已切换至{AdimiToolsDuelGuidanceText.Escape(GetCultureName(culture))}，请选择兵种并重生。");
     }
 
     private void Initialize()

@@ -33,13 +33,20 @@ internal sealed class AdimiToolsAiLearningCapture
         _sampleInterval = Math.Max(baseInterval, _participants.Count / 80d);
         _episode = new AdimiToolsAiLearningEpisode
         {
-            SchemaVersion = 2, MatchType = "ai", Id = Guid.NewGuid().ToString("N"), ArenaId = arenaId, ArenaKind = arenaKind, Difficulty = difficulty,
+            SchemaVersion = 2,
+            MatchType = "ai",
+            Id = Guid.NewGuid().ToString("N"),
+            ArenaId = arenaId,
+            ArenaKind = arenaKind,
+            Difficulty = difficulty,
             StartedUtc = DateTime.UtcNow.ToString("O"),
             InitialPlayers = _participants.Values.Count(p => p.IsPlayer),
-            InitialBots = _participants.Values.Count(p => !p.IsPlayer)
+            InitialBots = _participants.Values.Count(p => !p.IsPlayer),
         };
         if (!double.IsFinite(startedAt) || _episode.InitialPlayers == 0 || _episode.InitialBots == 0)
+        {
             _invalid = true;
+        }
     }
 
     public IReadOnlyCollection<int> ActorIds => _participants.Keys;
@@ -48,26 +55,50 @@ internal sealed class AdimiToolsAiLearningCapture
 
     public bool IsRemoved(int id)
     {
-        lock (_gate) return _deaths.ContainsKey(id);
+        lock (_gate)
+        {
+            return _deaths.ContainsKey(id);
+        }
     }
 
     public bool HasEnded
     {
-        get { lock (_gate) return _closed || IsTerminal(); }
+        get
+        {
+            lock (_gate)
+            {
+                return _closed || IsTerminal();
+            }
+        }
     }
 
     public void Invalidate()
     {
-        lock (_gate) _invalid = true;
+        lock (_gate)
+        {
+            _invalid = true;
+        }
     }
 
     public bool ShouldSample(double now)
     {
         lock (_gate)
         {
-            if (_closed || _episode.Truncated || IsTerminal()) return false;
-            if (!TrySeconds(now, out double seconds)) return false;
-            if (now + .000001d < _nextSample) return false;
+            if (_closed || _episode.Truncated || IsTerminal())
+            {
+                return false;
+            }
+
+            if (!TrySeconds(now, out double seconds))
+            {
+                return false;
+            }
+
+            if (now + .000001d < _nextSample)
+            {
+                return false;
+            }
+
             double interval = seconds < 120d ? _sampleInterval : Math.Max(.2d, _participants.Count * .08d);
             _nextSample = now + interval;
             return true;
@@ -78,12 +109,17 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed || _episode.Truncated || IsTerminal() || !TrySeconds(now, out double seconds)) return;
+            if (_closed || _episode.Truncated || IsTerminal() || !TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             if (_episode.Frames.Count >= MaxFrames || actors.Count > MaxActors - _actorCount)
             {
                 Truncate();
                 return;
             }
+
             var actorIds = new HashSet<int>(actors.Select(a => a.Id));
             if (actors.Count == 0 || (_episode.Frames.Count == 0 && actors.Count != _participants.Count)
                 || actorIds.Count != actors.Count
@@ -107,6 +143,7 @@ internal sealed class AdimiToolsAiLearningCapture
                 _invalid = true;
                 return;
             }
+
             _episode.Frames.Add(new AdimiToolsAiLearningFrame { Seconds = seconds, Actors = actors });
             _actorCount += actors.Count;
         }
@@ -116,7 +153,12 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed || mountId < 0 || _removedMounts.Contains(mountId)) { _invalid = true; return false; }
+            if (_closed || mountId < 0 || _removedMounts.Contains(mountId))
+            {
+                _invalid = true;
+                return false;
+            }
+
             _knownMounts.Add(mountId);
             return true;
         }
@@ -129,7 +171,11 @@ internal sealed class AdimiToolsAiLearningCapture
         lock (_gate)
         {
             bool posthumousMissile = isMissile && _deaths.ContainsKey(attackerParticipantId ?? attackerId);
-            if (_closed || _episode.Truncated || (IsTerminal() && !posthumousMissile) || !TrySeconds(now, out double seconds)) return;
+            if (_closed || _episode.Truncated || (IsTerminal() && !posthumousMissile) || !TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             if (!float.IsFinite(damage) || damage < 0f || !float.IsFinite(attackProgress) || attackerWeaponClass == null || attackerWeaponClass.Length > 64
                 || !_participants.ContainsKey(attackerParticipantId ?? attackerId)
                 || !_participants.ContainsKey(victimId))
@@ -137,11 +183,28 @@ internal sealed class AdimiToolsAiLearningCapture
                 _invalid = true;
                 return;
             }
-            if (_deaths.ContainsKey(attackerParticipantId ?? attackerId)) _invalid = true;
-            AddEvent(new AdimiToolsAiLearningEvent { Kind = "hit", Seconds = seconds,
-                AttackerId = attackerId, VictimId = victimId, IsBlocked = blocked, Damage = damage,
-                IsMissile = isMissile, AttackDirection = attackDirection, AttackProgress = attackProgress, StrikeType = strikeType, ThrustTipHit = thrustTipHit,
-                AttackerWeaponClass = attackerWeaponClass, IsAlternativeAttack = isAlternativeAttack });
+
+            if (_deaths.ContainsKey(attackerParticipantId ?? attackerId))
+            {
+                _invalid = true;
+            }
+
+            AddEvent(new AdimiToolsAiLearningEvent
+            {
+                Kind = "hit",
+                Seconds = seconds,
+                AttackerId = attackerId,
+                VictimId = victimId,
+                IsBlocked = blocked,
+                Damage = damage,
+                IsMissile = isMissile,
+                AttackDirection = attackDirection,
+                AttackProgress = attackProgress,
+                StrikeType = strikeType,
+                ThrustTipHit = thrustTipHit,
+                AttackerWeaponClass = attackerWeaponClass,
+                IsAlternativeAttack = isAlternativeAttack,
+            });
         }
     }
 
@@ -149,25 +212,51 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed || !_participants.ContainsKey(victimId)) return;
+            if (_closed || !_participants.ContainsKey(victimId))
+            {
+                return;
+            }
+
             int attributedAttacker = attackerParticipantId ?? attackerId;
             if (_deaths.TryGetValue(victimId, out var existing))
             {
-                if (existing.Attacker != attackerId || existing.AttackerParticipant != attributedAttacker || existing.State != state) _invalid = true;
+                if (existing.Attacker != attackerId || existing.AttackerParticipant != attributedAttacker || existing.State != state)
+                {
+                    _invalid = true;
+                }
+
                 return;
             }
-            if (!TrySeconds(now, out double seconds)) return;
+
+            if (!TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             if (state is not (AgentState.Killed or AgentState.Unconscious) || !_participants.ContainsKey(attributedAttacker)
                 || attributedAttacker == victimId)
             {
                 _invalid = true;
                 return;
             }
-            if (_deaths.ContainsKey(attributedAttacker)) _invalid = true;
+
+            if (_deaths.ContainsKey(attributedAttacker))
+            {
+                _invalid = true;
+            }
+
             _deaths.Add(victimId, (attackerId, attributedAttacker, seconds, state));
             if (!_episode.Truncated)
-                AddEvent(new AdimiToolsAiLearningEvent { Kind = "removal", Seconds = seconds,
-                    AttackerId = attackerId, VictimId = victimId, RemovalState = (int)state });
+            {
+                AddEvent(new AdimiToolsAiLearningEvent
+                {
+                    Kind = "removal",
+                    Seconds = seconds,
+                    AttackerId = attackerId,
+                    VictimId = victimId,
+                    RemovalState = (int)state,
+                });
+            }
         }
     }
 
@@ -178,7 +267,11 @@ internal sealed class AdimiToolsAiLearningCapture
         lock (_gate)
         {
             bool posthumousMissile = isMissile && _deaths.ContainsKey(attackerParticipantId);
-            if (_closed || _episode.Truncated || (IsTerminal() && !posthumousMissile) || !TrySeconds(now, out double seconds)) return;
+            if (_closed || _episode.Truncated || (IsTerminal() && !posthumousMissile) || !TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             if (!_knownMounts.Contains(mountId) || _removedMounts.Contains(mountId)
                 || !_participants.ContainsKey(attackerParticipantId) || !float.IsFinite(damage) || damage < 0f || !float.IsFinite(attackProgress)
                 || attackerWeaponClass == null || attackerWeaponClass.Length > 64)
@@ -186,11 +279,28 @@ internal sealed class AdimiToolsAiLearningCapture
                 _invalid = true;
                 return;
             }
-            if (_deaths.ContainsKey(attackerParticipantId)) _invalid = true;
-            AddEvent(new AdimiToolsAiLearningEvent { Kind = "mount_hit", Seconds = seconds,
-                AttackerId = attackerId, VictimId = mountId, IsBlocked = blocked, Damage = damage,
-                IsMissile = isMissile, AttackDirection = attackDirection, AttackProgress = attackProgress, StrikeType = strikeType, ThrustTipHit = thrustTipHit,
-                AttackerWeaponClass = attackerWeaponClass, IsAlternativeAttack = isAlternativeAttack });
+
+            if (_deaths.ContainsKey(attackerParticipantId))
+            {
+                _invalid = true;
+            }
+
+            AddEvent(new AdimiToolsAiLearningEvent
+            {
+                Kind = "mount_hit",
+                Seconds = seconds,
+                AttackerId = attackerId,
+                VictimId = mountId,
+                IsBlocked = blocked,
+                Damage = damage,
+                IsMissile = isMissile,
+                AttackDirection = attackDirection,
+                AttackProgress = attackProgress,
+                StrikeType = strikeType,
+                ThrustTipHit = thrustTipHit,
+                AttackerWeaponClass = attackerWeaponClass,
+                IsAlternativeAttack = isAlternativeAttack,
+            });
         }
     }
 
@@ -198,17 +308,37 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed || _episode.Truncated || IsTerminal() || !TrySeconds(now, out double seconds)) return;
+            if (_closed || _episode.Truncated || IsTerminal() || !TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             if (!_participants.ContainsKey(shooterId) || !float.IsFinite(x) || !float.IsFinite(y) || !float.IsFinite(z)
                 || !float.IsFinite(velocityX) || !float.IsFinite(velocityY) || !float.IsFinite(velocityZ))
             {
                 _invalid = true;
                 return;
             }
-            if (_deaths.ContainsKey(shooterId)) _invalid = true;
-            AddEvent(new AdimiToolsAiLearningEvent { Kind = "shot", Seconds = seconds,
-                AttackerId = shooterId, VictimId = -1, WeaponSlot = weaponSlot,
-                ShotX = x, ShotY = y, ShotZ = z, ShotVelocityX = velocityX, ShotVelocityY = velocityY, ShotVelocityZ = velocityZ });
+
+            if (_deaths.ContainsKey(shooterId))
+            {
+                _invalid = true;
+            }
+
+            AddEvent(new AdimiToolsAiLearningEvent
+            {
+                Kind = "shot",
+                Seconds = seconds,
+                AttackerId = shooterId,
+                VictimId = -1,
+                WeaponSlot = weaponSlot,
+                ShotX = x,
+                ShotY = y,
+                ShotZ = z,
+                ShotVelocityX = velocityX,
+                ShotVelocityY = velocityY,
+                ShotVelocityZ = velocityZ,
+            });
         }
     }
 
@@ -216,15 +346,38 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed || IsTerminal() || !_knownMounts.Contains(mountId) || _removedMounts.Contains(mountId)) return;
-            if (!TrySeconds(now, out double seconds)) return;
+            if (_closed || IsTerminal() || !_knownMounts.Contains(mountId) || _removedMounts.Contains(mountId))
+            {
+                return;
+            }
+
+            if (!TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             _removedMounts.Add(mountId);
             if (!_participants.ContainsKey(attackerParticipantId) || state is not (AgentState.Killed or AgentState.Unconscious))
+            {
                 _invalid = true;
-            if (_deaths.ContainsKey(attackerParticipantId)) _invalid = true;
+            }
+
+            if (_deaths.ContainsKey(attackerParticipantId))
+            {
+                _invalid = true;
+            }
+
             if (!_episode.Truncated)
-                AddEvent(new AdimiToolsAiLearningEvent { Kind = "mount_removal", Seconds = seconds,
-                    AttackerId = attackerId, VictimId = mountId, RemovalState = (int)state });
+            {
+                AddEvent(new AdimiToolsAiLearningEvent
+                {
+                    Kind = "mount_removal",
+                    Seconds = seconds,
+                    AttackerId = attackerId,
+                    VictimId = mountId,
+                    RemovalState = (int)state,
+                });
+            }
         }
     }
 
@@ -233,11 +386,17 @@ internal sealed class AdimiToolsAiLearningCapture
         lock (_gate)
         {
             if (_closed || _episode.Truncated || IsTerminal() || !_participants.ContainsKey(riderId)
-                || !TrySeconds(now, out double seconds)) return;
+                || !TrySeconds(now, out double seconds))
+            {
+                return;
+            }
+
             AddEvent(new AdimiToolsAiLearningEvent
             {
-                Kind = mounted ? "mount" : "dismount", Seconds = seconds,
-                AttackerId = -1, VictimId = riderId,
+                Kind = mounted ? "mount" : "dismount",
+                Seconds = seconds,
+                AttackerId = -1,
+                VictimId = riderId,
             });
         }
     }
@@ -246,7 +405,11 @@ internal sealed class AdimiToolsAiLearningCapture
     {
         lock (_gate)
         {
-            if (_closed) return null;
+            if (_closed)
+            {
+                return null;
+            }
+
             _closed = true;
             double elapsed = double.IsFinite(now) && double.IsFinite(_startedAt) ? Math.Max(0d, now - _startedAt) : 0d;
             _episode.Outcome = playerWon.HasValue ? (playerWon.Value ? "player_win" : "ai_win") : "aborted";
@@ -258,7 +421,11 @@ internal sealed class AdimiToolsAiLearningCapture
             bool winnerAlive = playerWon.HasValue && _participants.Values.Any(p => p.IsPlayer == playerWon.Value && !_deaths.ContainsKey(p.Id));
             // The last relevant removal is the actual end; polling can occur later.
             _episode.DurationSeconds = confirmed ? losers.Max(p => _deaths[p.Id].Seconds) : elapsed;
-            if (_episode.DurationSeconds > MaxSeconds) Truncate();
+            if (_episode.DurationSeconds > MaxSeconds)
+            {
+                Truncate();
+            }
+
             _episode.Valid = playerWon.HasValue && !interrupted && !_invalid && !_episode.Truncated
                 && confirmed && winnerAlive && _episode.Frames.Count >= 2;
             if (_episode.Valid && playerWon == true && _episode.InitialPlayers == 1 && _episode.InitialBots == 1)
@@ -267,6 +434,7 @@ internal sealed class AdimiToolsAiLearningCapture
                 Participant bot = _participants.Values.Single(p => !p.IsPlayer);
                 _episode.SoloAttributedWin = _deaths[bot.Id].AttackerParticipant == player.Id;
             }
+
             return _episode;
         }
     }
@@ -274,8 +442,19 @@ internal sealed class AdimiToolsAiLearningCapture
     private bool TrySeconds(double now, out double seconds)
     {
         seconds = now - _startedAt;
-        if (!double.IsFinite(seconds) || seconds < 0d) { _invalid = true; seconds = 0d; return false; }
-        if (seconds > MaxSeconds) { Truncate(); return false; }
+        if (!double.IsFinite(seconds) || seconds < 0d)
+        {
+            _invalid = true;
+            seconds = 0d;
+            return false;
+        }
+
+        if (seconds > MaxSeconds)
+        {
+            Truncate();
+            return false;
+        }
+
         return true;
     }
 
@@ -285,9 +464,18 @@ internal sealed class AdimiToolsAiLearningCapture
 
     private void AddEvent(AdimiToolsAiLearningEvent item)
     {
-        if (_episode.Events.Count >= MaxEvents) { Truncate(); return; }
+        if (_episode.Events.Count >= MaxEvents)
+        {
+            Truncate();
+            return;
+        }
+
         _episode.Events.Add(item);
     }
 
-    private void Truncate() { _episode.Truncated = true; _invalid = true; }
+    private void Truncate()
+    {
+        _episode.Truncated = true;
+        _invalid = true;
+    }
 }

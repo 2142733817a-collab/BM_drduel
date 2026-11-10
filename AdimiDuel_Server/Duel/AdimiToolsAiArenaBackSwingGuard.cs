@@ -23,7 +23,12 @@ internal sealed class AdimiToolsAiArenaBackSwingGuard : AgentComponent
 
     private sealed class InputSnapshot
     {
-        public InputSnapshot(Agent.MovementControlFlag guard, long expiresAt) { Guard = guard; ExpiresAt = expiresAt; }
+        public InputSnapshot(Agent.MovementControlFlag guard, long expiresAt)
+        {
+            Guard = guard;
+            ExpiresAt = expiresAt;
+        }
+
         public Agent.MovementControlFlag Guard { get; }
         public long ExpiresAt { get; }
     }
@@ -56,12 +61,14 @@ internal sealed class AdimiToolsAiArenaBackSwingGuard : AgentComponent
             _snapshot = null;
             _sampledPublicationVersion = _publicationVersion;
         }
+
         if (!double.IsFinite(now) || (_hasLastTime && now < _lastTime))
         {
             _previousReleases.Clear();
             _guardUntil = 0d;
             _yieldUntil = 0d;
         }
+
         _currentReleases.Clear();
         _sampledGuard = Agent.MovementControlFlag.None;
         _sampledDistanceSquared = float.PositiveInfinity;
@@ -169,7 +176,10 @@ internal sealed class AdimiToolsAiArenaBackSwingGuard : AgentComponent
             _guardUntil = _sampledTime + GuardWindowSeconds;
         }
 
-        if (_guardUntil <= 0d) _guardUntil = _sampledTime + GuardWindowSeconds;
+        if (_guardUntil <= 0d)
+        {
+            _guardUntil = _sampledTime + GuardWindowSeconds;
+        }
 
         if (_sampledTime >= _guardUntil)
         {
@@ -186,7 +196,9 @@ internal sealed class AdimiToolsAiArenaBackSwingGuard : AgentComponent
         lock (_publicationGate)
         {
             if (_sampledPublicationVersion == _publicationVersion)
+            {
                 _snapshot = new InputSnapshot(_sampledGuard, expiresAt);
+            }
         }
     }
 
@@ -197,6 +209,7 @@ internal sealed class AdimiToolsAiArenaBackSwingGuard : AgentComponent
             _snapshot = null;
             _publicationVersion++;
         }
+
         _previousReleases.Clear();
         _currentReleases.Clear();
         _hasLastTime = false;

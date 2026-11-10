@@ -134,11 +134,17 @@ internal static class AdimiToolsAiLearningStore
 
     // Starts the single lazy instance and its background journal scan without
     // waiting for file I/O or for a new completed round.
-    public static void EnsureInitialized() { _ = GetCounts(); }
+    public static void EnsureInitialized()
+    {
+        _ = GetCounts();
+    }
 
     public static bool TryEnqueue(AdimiToolsAiLearningEpisode episode)
     {
-        try { return Instance.Value.TryEnqueue(episode); }
+        try
+        {
+            return Instance.Value.TryEnqueue(episode);
+        }
         catch (Exception exception)
         {
             AdimiToolsAiLearningLog.QueueThrottled(ref _lastUnavailableWarning,
@@ -149,7 +155,10 @@ internal static class AdimiToolsAiLearningStore
 
     public static AdimiToolsAiLearningCounts GetCounts()
     {
-        try { return Instance.Value.GetCounts(); }
+        try
+        {
+            return Instance.Value.GetCounts();
+        }
         catch (Exception exception)
         {
             AdimiToolsAiLearningLog.QueueThrottled(ref _lastUnavailableWarning,
@@ -183,22 +192,43 @@ internal static class AdimiToolsAiLearningLog
         while (true)
         {
             long previous = Interlocked.Read(ref lastWarning);
-            if (previous != 0 && now - previous < WarningIntervalMilliseconds) return false;
-            if (Interlocked.CompareExchange(ref lastWarning, now, previous) == previous) return true;
+            if (previous != 0 && now - previous < WarningIntervalMilliseconds)
+            {
+                return false;
+            }
+
+            if (Interlocked.CompareExchange(ref lastWarning, now, previous) == previous)
+            {
+                return true;
+            }
         }
     }
 
     internal static void QueueThrottled(ref long lastWarning, string message)
     {
-        if (!ShouldWarn(ref lastWarning)) return;
-        try { ThreadPool.QueueUserWorkItem(static state => Write((string)state!), message); }
-        catch (Exception) { }
+        if (!ShouldWarn(ref lastWarning))
+        {
+            return;
+        }
+
+        try
+        {
+            ThreadPool.QueueUserWorkItem(static state => Write((string)state!), message);
+        }
+        catch (Exception)
+        {
+        }
     }
 
     internal static void Write(string message)
     {
-        try { Console.Error.WriteLine("[Adimi AI Training] " + message); }
-        catch (Exception) { }
+        try
+        {
+            Console.Error.WriteLine("[Adimi AI Training] " + message);
+        }
+        catch (Exception)
+        {
+        }
     }
 }
 
@@ -268,11 +298,26 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         Func<string, long>? availableBytes = null, long minimumFreeBytes = DefaultMinimumFreeBytes,
         Action<string>? sealSyncDirectory = null, Action<string>? sealFaultHook = null)
     {
-        if (string.IsNullOrWhiteSpace(directory)) throw new ArgumentException("A storage directory is required.", nameof(directory));
-        if (capacity < 1 || capacity > DefaultCapacity) throw new ArgumentOutOfRangeException(nameof(capacity));
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            throw new ArgumentException("A storage directory is required.", nameof(directory));
+        }
+
+        if (capacity < 1 || capacity > DefaultCapacity)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capacity));
+        }
+
         if (reviewInterval.HasValue && (reviewInterval.Value < TimeSpan.FromMilliseconds(50) || reviewInterval.Value > TimeSpan.FromMinutes(1)))
+        {
             throw new ArgumentOutOfRangeException(nameof(reviewInterval));
-        if (minimumFreeBytes < 0) throw new ArgumentOutOfRangeException(nameof(minimumFreeBytes));
+        }
+
+        if (minimumFreeBytes < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minimumFreeBytes));
+        }
+
         _directory = Path.GetFullPath(directory);
         _file = Path.Combine(_directory, "episodes.jsonl");
         _reviewsFile = Path.Combine(_directory, "reviews.json");
@@ -309,8 +354,12 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                 rejected = true;
                 invalid = episode == null;
             }
-            else _pending++;
+            else
+            {
+                _pending++;
+            }
         }
+
         if (rejected)
         {
             ReportDrop(invalid);
@@ -324,7 +373,10 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             {
                 accepted = _queue.Writer.TryWrite(new WriterItem(snapshot!, null, null));
             }
-            else invalid = true;
+            else
+            {
+                invalid = true;
+            }
         }
         catch (Exception)
         {
@@ -335,30 +387,47 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         {
             if (!accepted)
             {
-                lock (_gate) { _pending--; _dropped++; }
+                lock (_gate)
+                {
+                    _pending--;
+                    _dropped++;
+                }
+
                 ReportDrop(invalid);
             }
         }
+
         return accepted;
     }
 
     private void ReportDrop(bool invalid)
     {
         if (invalid)
+        {
             AdimiToolsAiLearningLog.QueueThrottled(ref _lastInvalidDropWarning, "Recording dropped because its snapshot was invalid.");
+        }
         else
+        {
             AdimiToolsAiLearningLog.QueueThrottled(ref _lastUnavailableDropWarning, "Recording dropped because the queue is full or the writer is unavailable.");
+        }
     }
 
     internal AdimiToolsAiLearningCounts GetCounts()
     {
-        lock (_gate) return new AdimiToolsAiLearningCounts(_ready, _validRounds, _soloWins, _pending, _errors, _dropped, _pausedForSpace);
+        lock (_gate)
+        {
+            return new AdimiToolsAiLearningCounts(_ready, _validRounds, _soloWins, _pending, _errors, _dropped, _pausedForSpace);
+        }
     }
 
     // Used by tests/controlled shutdown. Ordinary enqueue never waits on I/O.
     internal async Task<bool> CompleteAsync(TimeSpan timeout)
     {
-        lock (_gate) { _closed = true; }
+        lock (_gate)
+        {
+            _closed = true;
+        }
+
         _queue.Writer.TryComplete();
         try
         {
@@ -369,7 +438,14 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         {
             _cancel.Cancel();
             SignalModel();
-            try { await Task.WhenAll(_writer, _modelWorker).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false); } catch (Exception) { }
+            try
+            {
+                await Task.WhenAll(_writer, _modelWorker).WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+            }
+
             return false;
         }
     }
@@ -380,7 +456,11 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         bool initializationFailed = false;
         try
         {
-            if (_publish != null) ClearReceipt();
+            if (_publish != null)
+            {
+                ClearReceipt();
+            }
+
             while (!_cancel.IsCancellationRequested)
             {
                 try
@@ -388,21 +468,43 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                     RecoverAndLoadArchive();
                     (long valid, long wins, long corrupt, _) = InitializeAndRead(ids, null, null);
                     long committed = new FileInfo(_file).Length;
-                    lock (_gate) { _validRounds = valid; _soloWins = wins; _errors += corrupt; _committedLength = committed; _ready = true; }
+                    lock (_gate)
+                    {
+                        _validRounds = valid;
+                        _soloWins = wins;
+                        _errors += corrupt;
+                        _committedLength = committed;
+                        _ready = true;
+                    }
+
                     _indexReady.TrySetResult(true);
                     SignalModel();
-                    if (initializationFailed) AdimiToolsAiLearningLog.Write("Storage initialization recovered.");
-                    if (corrupt != 0) AdimiToolsAiLearningLog.Write("Storage recovery found " + corrupt + " invalid or incomplete record(s); they were excluded from counts.");
+                    if (initializationFailed)
+                    {
+                        AdimiToolsAiLearningLog.Write("Storage initialization recovered.");
+                    }
+
+                    if (corrupt != 0)
+                    {
+                        AdimiToolsAiLearningLog.Write("Storage recovery found " + corrupt + " invalid or incomplete record(s); they were excluded from counts.");
+                    }
+
                     break;
                 }
                 catch (Exception exception)
                 {
-                    lock (_gate) { _ready = false; _errors++; }
+                    lock (_gate)
+                    {
+                        _ready = false;
+                        _errors++;
+                    }
+
                     if (!initializationFailed)
                     {
                         AdimiToolsAiLearningLog.Write("Storage initialization failed (" + exception.GetType().Name + "); retrying every 2 seconds.");
                         initializationFailed = true;
                     }
+
                     await Task.Delay(TimeSpan.FromSeconds(2), _cancel.Token).ConfigureAwait(false);
                 }
             }
@@ -415,31 +517,51 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                     timeout.CancelAfter(_reviewInterval);
                     try
                     {
-                        if (!await _queue.Reader.WaitToReadAsync(timeout.Token).ConfigureAwait(false)) break;
+                        if (!await _queue.Reader.WaitToReadAsync(timeout.Token).ConfigureAwait(false))
+                        {
+                            break;
+                        }
                     }
-                    catch (OperationCanceledException) when (!_cancel.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (!_cancel.IsCancellationRequested)
+                    {
+                    }
+
                     continue;
                 }
+
                 if (item.SealRequest != null)
                 {
                     ProcessSeal(item.SealRequest, ids);
                     continue;
                 }
+
                 if (item.Confirmation != null)
                 {
                     ProcessConfirmation(item.Confirmation);
                     continue;
                 }
+
                 AdimiToolsAiLearningEpisode episode = item.Episode!;
                 Guid id = Guid.Parse(episode.Id);
                 if (ids.Contains(id))
                 {
-                    lock (_gate) { _pending--; }
+                    lock (_gate)
+                    {
+                        _pending--;
+                    }
+
                     continue;
                 }
+
                 if (ids.Count >= MaxJournalIdentities)
                 {
-                    lock (_gate) { _pending--; _dropped++; _errors++; }
+                    lock (_gate)
+                    {
+                        _pending--;
+                        _dropped++;
+                        _errors++;
+                    }
+
                     AdimiToolsAiLearningLog.QueueThrottled(ref _lastUnavailableDropWarning,
                         "Recording dropped: journal identity limit reached; archive journal before restarting.");
                     continue;
@@ -453,9 +575,18 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                 }
                 catch (Exception exception)
                 {
-                    lock (_gate) { _pending--; _dropped++; _errors++; }
+                    lock (_gate)
+                    {
+                        _pending--;
+                        _dropped++;
+                        _errors++;
+                    }
+
                     if (AdimiToolsAiLearningLog.ShouldWarn(ref _lastSerializationWarning))
+                    {
                         AdimiToolsAiLearningLog.Write("Recording serialization failed (" + exception.GetType().Name + "); the record was dropped.");
+                    }
+
                     continue;
                 }
 
@@ -477,35 +608,69 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                                 _pending--;
                                 _dropped++;
                             }
-                            if (notify) AdimiToolsAiLearningLog.Write("Recording paused: " + spaceReason + "; saved data was retained.");
+
+                            if (notify)
+                            {
+                                AdimiToolsAiLearningLog.Write("Recording paused: " + spaceReason + "; saved data was retained.");
+                            }
+
                             break;
                         }
+
                         bool resumed;
-                        lock (_gate) { resumed = _pausedForSpace; _pausedForSpace = false; }
-                        if (resumed) AdimiToolsAiLearningLog.Write("Recording resumed after available storage recovered.");
+                        lock (_gate)
+                        {
+                            resumed = _pausedForSpace;
+                            _pausedForSpace = false;
+                        }
+
+                        if (resumed)
+                        {
+                            AdimiToolsAiLearningLog.Write("Recording resumed after available storage recovered.");
+                        }
+
                         long committed = Append(json);
                         ids.Add(id);
                         lock (_gate)
                         {
-                            if (episode.Valid) _validRounds++;
-                            if (episode.Valid && episode.SoloAttributedWin && episode.MatchType == "ai") _soloWins++;
+                            if (episode.Valid)
+                            {
+                                _validRounds++;
+                            }
+
+                            if (episode.Valid && episode.SoloAttributedWin && episode.MatchType == "ai")
+                            {
+                                _soloWins++;
+                            }
+
                             _pending--;
                             _committedLength = committed;
                             _ready = true;
                         }
+
                         SignalModel();
-                        if (writeFailed) AdimiToolsAiLearningLog.Write("Storage writing recovered.");
+                        if (writeFailed)
+                        {
+                            AdimiToolsAiLearningLog.Write("Storage writing recovered.");
+                        }
+
                         break;
                     }
                     catch (Exception exception)
                     {
-                        lock (_gate) { _ready = false; _errors++; }
+                        lock (_gate)
+                        {
+                            _ready = false;
+                            _errors++;
+                        }
+
                         if (!writeFailed)
                         {
                             SignalModel();
                             AdimiToolsAiLearningLog.Write("Storage write failed (" + exception.GetType().Name + "); retrying every 2 seconds.");
                             writeFailed = true;
                         }
+
                         await Task.Delay(TimeSpan.FromSeconds(2), _cancel.Token).ConfigureAwait(false);
                     }
                 }
@@ -514,12 +679,25 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         catch (OperationCanceledException) when (_cancel.IsCancellationRequested)
         {
             int pending;
-            lock (_gate) { pending = _pending; }
-            if (pending > 0) AdimiToolsAiLearningLog.Write("Writer stopped with " + pending + " unsaved record(s).");
+            lock (_gate)
+            {
+                pending = _pending;
+            }
+
+            if (pending > 0)
+            {
+                AdimiToolsAiLearningLog.Write("Writer stopped with " + pending + " unsaved record(s).");
+            }
         }
         catch (Exception exception)
         {
-            lock (_gate) { _ready = false; _errors++; _closed = true; }
+            lock (_gate)
+            {
+                _ready = false;
+                _errors++;
+                _closed = true;
+            }
+
             _queue.Writer.TryComplete();
             AdimiToolsAiLearningLog.Write("Writer stopped unexpectedly (" + exception.GetType().Name + "); pending records may be lost and recording is unavailable until restart.");
         }
@@ -529,20 +707,43 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             lock (_gate)
             {
                 _writerFinished = true;
-                foreach (var request in _sealRequests) request.TrySetException(new IOException("recording writer is unavailable"));
+                foreach (var request in _sealRequests)
+                {
+                    request.TrySetException(new IOException("recording writer is unavailable"));
+                }
+
                 _sealRequests.Clear();
-                foreach (var request in _confirmationRequests) request.TrySetException(new IOException("recording writer is unavailable"));
+                foreach (var request in _confirmationRequests)
+                {
+                    request.TrySetException(new IOException("recording writer is unavailable"));
+                }
+
                 _confirmationRequests.Clear();
             }
+
             SignalModel();
         }
     }
 
     private bool PublishPolicy(AdimiToolsAiLearnedPolicy? policy)
     {
-        if (_publish == null) return false;
-        try { _publish(policy); _lastPublished = policy; _modelHasPublished = true; return true; }
-        catch (Exception exception) { FailLearning(exception); return false; }
+        if (_publish == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            _publish(policy);
+            _lastPublished = policy;
+            _modelHasPublished = true;
+            return true;
+        }
+        catch (Exception exception)
+        {
+            FailLearning(exception);
+            return false;
+        }
     }
 
     private void FailLearning(Exception exception)
@@ -552,14 +753,31 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         _lastPublished = null;
         _modelHasPublished = false;
         ClearReceipt();
-        try { _publish?.Invoke(null); } catch (Exception) { }
+        try
+        {
+            _publish?.Invoke(null);
+        }
+        catch (Exception)
+        {
+        }
+
         AdimiToolsAiLearningLog.Write("Learning model unavailable (" + exception.GetType().Name + "); using original AI behavior.");
     }
 
     private void SignalModel()
     {
-        if (_publish == null) return;
-        try { _modelSignal.Release(); } catch (SemaphoreFullException) { }
+        if (_publish == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _modelSignal.Release();
+        }
+        catch (SemaphoreFullException)
+        {
+        }
     }
 
     private void ReviewFailure(Exception exception)
@@ -567,8 +785,16 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         _trainer = null;
         _modelDirty = true;
         ClearReceipt();
-        if (_lastPublished != null) PublishPolicy(null);
-        lock (_gate) { _errors++; }
+        if (_lastPublished != null)
+        {
+            PublishPolicy(null);
+        }
+
+        lock (_gate)
+        {
+            _errors++;
+        }
+
         if (!_reviewFault)
         {
             AdimiToolsAiLearningLog.Write("Learning review/rebuild failed (" + exception.GetType().Name + "); using original AI and retrying.");
@@ -576,7 +802,9 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         }
     }
 
-    private sealed class ModelSnapshotChangedException : Exception { }
+    private sealed class ModelSnapshotChangedException : Exception
+    {
+    }
 
     // This worker never touches a live agent and never modifies the journal.
     // It scans only a prefix whose final newline was successfully flushed by
@@ -588,38 +816,79 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         long modelEpoch = -1;
         try
         {
-            if (!await _indexReady.Task.WaitAsync(_cancel.Token).ConfigureAwait(false)) return;
+            if (!await _indexReady.Task.WaitAsync(_cancel.Token).ConfigureAwait(false))
+            {
+                return;
+            }
+
             while (!_cancel.IsCancellationRequested)
             {
                 bool ready, finished;
                 long limit, epoch;
                 ArchiveState? archive;
                 HashSet<Guid> archiveIds;
-                lock (_gate) { ready = _ready; finished = _writerFinished; limit = _committedLength; epoch = _archiveEpoch; archive = _archiveState; archiveIds = _archiveIds; }
+                lock (_gate)
+                {
+                    ready = _ready;
+                    finished = _writerFinished;
+                    limit = _committedLength;
+                    epoch = _archiveEpoch;
+                    archive = _archiveState;
+                    archiveIds = _archiveIds;
+                }
+
                 if (!ready)
                 {
-                    _trainer = null; _modelDirty = true; seen.Clear(); cursor = 0;
+                    _trainer = null;
+                    _modelDirty = true;
+                    seen.Clear();
+                    cursor = 0;
                     ClearReceipt();
-                    if (_lastPublished != null) PublishPolicy(null);
-                    if (finished) break;
+                    if (_lastPublished != null)
+                    {
+                        PublishPolicy(null);
+                    }
+
+                    if (finished)
+                    {
+                        break;
+                    }
+
                     await _modelSignal.WaitAsync(_reviewInterval, _cancel.Token).ConfigureAwait(false);
                     continue;
                 }
+
                 try
                 {
                     ReviewSnapshot requested = ReadReviews();
-                    if (modelEpoch != epoch) { _trainer = null; _modelDirty = true; seen.Clear(); cursor = 0; modelEpoch = epoch; }
+                    if (modelEpoch != epoch)
+                    {
+                        _trainer = null;
+                        _modelDirty = true;
+                        seen.Clear();
+                        cursor = 0;
+                        modelEpoch = epoch;
+                    }
+
                     if (_trainer == null || _modelDirty || requested.Digest != _reviewDigest)
                     {
                         ClearReceipt();
-                        if (_lastPublished != null) PublishPolicy(null);
+                        if (_lastPublished != null)
+                        {
+                            PublishPolicy(null);
+                        }
+
                         _modelHasPublished = false;
-                        if (archive == null) _trainer = new AdimiToolsAiLearningTrainer();
+                        if (archive == null)
+                        {
+                            _trainer = new AdimiToolsAiLearningTrainer();
+                        }
                         else
                         {
                             ValidateArchive(archive, verifySegments: false);
                             _trainer = AdimiToolsAiTrainingSampleCodec.Rebuild(ReadArchiveSamples(archive, archiveIds), archive.ExpectedLastSequence, requested.Excluded);
                         }
+
                         _excluded = requested.Excluded;
                         _reviewDigest = requested.Digest;
                         _modelDirty = false;
@@ -627,11 +896,20 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                         seen.UnionWith(archiveIds);
                         cursor = 0;
                     }
-                    if (cursor > limit) throw new IOException("Committed journal prefix moved backwards.");
+
+                    if (cursor > limit)
+                    {
+                        throw new IOException("Committed journal prefix moved backwards.");
+                    }
+
                     if (cursor < limit)
                     {
                         using var stream = new FileStream(_file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                        if (stream.Length < limit) throw new IOException("Committed journal prefix is unavailable.");
+                        if (stream.Length < limit)
+                        {
+                            throw new IOException("Committed journal prefix is unavailable.");
+                        }
+
                         stream.Position = cursor;
                         long nextCheck = Environment.TickCount64 + (long)_reviewInterval.TotalMilliseconds;
                         (_, _, _, bool trainingOk) = ScanRows(stream, limit - cursor, seen, _trainer, requested.Excluded, () =>
@@ -639,62 +917,154 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                             _modelScanHook?.Invoke(); // Optional controlled test synchronization; production passes null.
                             _cancel.Token.ThrowIfCancellationRequested();
                             bool storageReady;
-                            lock (_gate) { storageReady = _ready && _archiveEpoch == epoch; }
-                            if (!storageReady) throw new ModelSnapshotChangedException();
+                            lock (_gate)
+                            {
+                                storageReady = _ready && _archiveEpoch == epoch;
+                            }
+
+                            if (!storageReady)
+                            {
+                                throw new ModelSnapshotChangedException();
+                            }
+
                             if (Environment.TickCount64 >= nextCheck)
                             {
                                 nextCheck = Environment.TickCount64 + (long)_reviewInterval.TotalMilliseconds;
-                                if (requested.Digest != ReadReviews().Digest) throw new ModelSnapshotChangedException();
+                                if (requested.Digest != ReadReviews().Digest)
+                                {
+                                    throw new ModelSnapshotChangedException();
+                                }
                             }
                         });
-                        if (!trainingOk) throw new InvalidOperationException("Could not rebuild training data.");
+                        if (!trainingOk)
+                        {
+                            throw new InvalidOperationException("Could not rebuild training data.");
+                        }
+
                         cursor = limit;
                     }
-                    if (requested.Digest != ReadReviews().Digest) throw new ModelSnapshotChangedException();
-                    lock (_gate) { ready = _ready && _archiveEpoch == epoch; finished = _writerFinished; limit = _committedLength; }
-                    if (!ready) throw new ModelSnapshotChangedException();
-                    if (cursor != limit) continue;
+
+                    if (requested.Digest != ReadReviews().Digest)
+                    {
+                        throw new ModelSnapshotChangedException();
+                    }
+
+                    lock (_gate)
+                    {
+                        ready = _ready && _archiveEpoch == epoch;
+                        finished = _writerFinished;
+                        limit = _committedLength;
+                    }
+
+                    if (!ready)
+                    {
+                        throw new ModelSnapshotChangedException();
+                    }
+
+                    if (cursor != limit)
+                    {
+                        continue;
+                    }
+
                     bool published = _modelHasPublished && ReferenceEquals(_lastPublished, _trainer.Current);
                     lock (_gate)
                     {
-                        if (!_ready || _archiveEpoch != epoch) throw new ModelSnapshotChangedException();
-                        if (!published) published = PublishPolicy(_trainer.Current);
+                        if (!_ready || _archiveEpoch != epoch)
+                        {
+                            throw new ModelSnapshotChangedException();
+                        }
+
+                        if (!published)
+                        {
+                            published = PublishPolicy(_trainer.Current);
+                        }
                     }
-                    if (!published) throw new InvalidOperationException("Could not publish the rebuilt model.");
+
+                    if (!published)
+                    {
+                        throw new InvalidOperationException("Could not publish the rebuilt model.");
+                    }
+
                     if (requested.Digest != null)
                     {
                         if (_appliedDigest != requested.Digest || !File.Exists(_receiptFile))
+                        {
                             TryWriteReceipt(requested.Digest, epoch);
-                        if (requested.Digest != ReadReviews().Digest) throw new ModelSnapshotChangedException();
-                        lock (_gate) { if (!_ready || _archiveEpoch != epoch) throw new ModelSnapshotChangedException(); }
+                        }
+
+                        if (requested.Digest != ReadReviews().Digest)
+                        {
+                            throw new ModelSnapshotChangedException();
+                        }
+
+                        lock (_gate)
+                        {
+                            if (!_ready || _archiveEpoch != epoch)
+                            {
+                                throw new ModelSnapshotChangedException();
+                            }
+                        }
                     }
-                    else ClearReceipt();
-                    if (_reviewFault) { AdimiToolsAiLearningLog.Write("Learning review data recovered."); _reviewFault = false; }
-                    if (finished) break;
+                    else
+                    {
+                        ClearReceipt();
+                    }
+
+                    if (_reviewFault)
+                    {
+                        AdimiToolsAiLearningLog.Write("Learning review data recovered.");
+                        _reviewFault = false;
+                    }
+
+                    if (finished)
+                    {
+                        break;
+                    }
                 }
                 catch (ModelSnapshotChangedException)
                 {
-                    _trainer = null; _modelDirty = true; seen.Clear(); cursor = 0;
+                    _trainer = null;
+                    _modelDirty = true;
+                    seen.Clear();
+                    cursor = 0;
                     ClearReceipt();
-                    if (_lastPublished != null) PublishPolicy(null);
+                    if (_lastPublished != null)
+                    {
+                        PublishPolicy(null);
+                    }
+
                     continue;
                 }
-                catch (OperationCanceledException) when (_cancel.IsCancellationRequested) { throw; }
+                catch (OperationCanceledException) when (_cancel.IsCancellationRequested)
+                {
+                    throw;
+                }
                 catch (Exception exception)
                 {
                     ReviewFailure(exception);
-                    seen.Clear(); cursor = 0;
-                    if (finished) break;
+                    seen.Clear();
+                    cursor = 0;
+                    if (finished)
+                    {
+                        break;
+                    }
                 }
+
                 await _modelSignal.WaitAsync(_reviewInterval, _cancel.Token).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (_cancel.IsCancellationRequested)
         {
             ClearReceipt();
-            if (_lastPublished != null) PublishPolicy(null);
+            if (_lastPublished != null)
+            {
+                PublishPolicy(null);
+            }
         }
-        catch (Exception exception) { ReviewFailure(exception); }
+        catch (Exception exception)
+        {
+            ReviewFailure(exception);
+        }
     }
 
     private readonly record struct ReviewSnapshot(HashSet<Guid> Excluded, string? Digest);
@@ -705,50 +1075,85 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         try
         {
             using var stream = new FileStream(_reviewsFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > MaxReviewsBytes) throw new InvalidDataException("Review file is too large.");
+            if (stream.Length > MaxReviewsBytes)
+            {
+                throw new InvalidDataException("Review file is too large.");
+            }
+
             using var buffer = new MemoryStream();
             var chunk = new byte[8192];
             int count;
             while ((count = stream.Read(chunk, 0, chunk.Length)) != 0)
             {
-                if (buffer.Length + count > MaxReviewsBytes) throw new InvalidDataException("Review file is too large.");
+                if (buffer.Length + count > MaxReviewsBytes)
+                {
+                    throw new InvalidDataException("Review file is too large.");
+                }
+
                 buffer.Write(chunk, 0, count);
             }
+
             bytes = buffer.ToArray();
         }
-        catch (FileNotFoundException) { return new ReviewSnapshot(new HashSet<Guid>(), null); }
+        catch (FileNotFoundException)
+        {
+            return new ReviewSnapshot(new HashSet<Guid>(), null);
+        }
+
         using JsonDocument document = JsonDocument.Parse(bytes);
         JsonElement root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("version", out JsonElement version)
             || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out int versionNumber) || versionNumber != 1
             || !root.TryGetProperty("excluded", out JsonElement excluded) || excluded.ValueKind != JsonValueKind.Array
-            || excluded.GetArrayLength() > MaxExcludedEpisodes) throw new InvalidDataException("Invalid review schema.");
+            || excluded.GetArrayLength() > MaxExcludedEpisodes)
+        {
+            throw new InvalidDataException("Invalid review schema.");
+        }
+
         var result = new HashSet<Guid>();
         foreach (JsonElement value in excluded.EnumerateArray())
         {
             if (value.ValueKind != JsonValueKind.String || !Guid.TryParseExact(value.GetString(), "N", out Guid id))
+            {
                 throw new InvalidDataException("Invalid excluded episode ID.");
+            }
+
             result.Add(id);
         }
+
         return new ReviewSnapshot(result, Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant());
     }
 
     private bool ClearReceipt()
     {
         _appliedDigest = null;
-        try { File.Delete(_receiptFile); return true; }
-        catch (DirectoryNotFoundException) { return true; }
+        try
+        {
+            File.Delete(_receiptFile);
+            return true;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return true;
+        }
         catch (Exception exception)
         {
             if (AdimiToolsAiLearningLog.ShouldWarn(ref _lastReceiptWarning))
+            {
                 AdimiToolsAiLearningLog.Write("Review receipt could not be removed (" + exception.GetType().Name + "); retrying without affecting recording.");
+            }
+
             return false;
         }
     }
 
     private void TryWriteReceipt(string digest, long epoch)
     {
-        if (!ClearReceipt()) return;
+        if (!ClearReceipt())
+        {
+            return;
+        }
+
         string temporary = Path.Combine(_directory, "reviews-applied-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".tmp");
         try
         {
@@ -758,10 +1163,15 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                 stream.Write(bytes, 0, bytes.Length);
                 stream.Flush(flushToDisk: true);
             }
+
             _beforeReceiptReplaceHook?.Invoke(); // Controlled failure injection for isolated tests.
             lock (_gate)
             {
-                if (!_ready || _archiveEpoch != epoch) throw new ModelSnapshotChangedException();
+                if (!_ready || _archiveEpoch != epoch)
+                {
+                    throw new ModelSnapshotChangedException();
+                }
+
                 File.Move(temporary, _receiptFile, overwrite: true);
                 _appliedDigest = digest;
             }
@@ -769,8 +1179,17 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         catch (Exception exception)
         {
             if (AdimiToolsAiLearningLog.ShouldWarn(ref _lastReceiptWarning))
+            {
                 AdimiToolsAiLearningLog.Write("Review receipt could not be written (" + exception.GetType().Name + "); retrying without affecting recording.");
-            try { File.Delete(temporary); } catch (Exception) { }
+            }
+
+            try
+            {
+                File.Delete(temporary);
+            }
+            catch (Exception)
+            {
+            }
         }
     }
 
@@ -795,8 +1214,17 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         foreach (byte[]? line in ReadBoundedLinesWithin(stream, byteCount))
         {
             monitor?.Invoke();
-            if (line == null) { corrupt++; continue; }
-            if (line.Length == 0) continue;
+            if (line == null)
+            {
+                corrupt++;
+                continue;
+            }
+
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
             try
             {
                 using JsonDocument outer = JsonDocument.Parse(line);
@@ -815,13 +1243,30 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                     corrupt++;
                     continue;
                 }
-                if (ids.Contains(id)) continue;
-                if (ids.Count >= MaxJournalIdentities) throw new InvalidOperationException("Journal identity limit exceeded.");
+
+                if (ids.Contains(id))
+                {
+                    continue;
+                }
+
+                if (ids.Count >= MaxJournalIdentities)
+                {
+                    throw new InvalidOperationException("Journal identity limit exceeded.");
+                }
+
                 ids.Add(id);
-                if (validValue.GetBoolean()) valid++;
+                if (validValue.GetBoolean())
+                {
+                    valid++;
+                }
+
                 bool isAi = !root.TryGetProperty("MatchType", out JsonElement matchType)
                     || (matchType.ValueKind == JsonValueKind.String && matchType.GetString() == "ai");
-                if (validValue.GetBoolean() && winValue.GetBoolean() && isAi) wins++;
+                if (validValue.GetBoolean() && winValue.GetBoolean() && isAi)
+                {
+                    wins++;
+                }
+
                 if (((trainer != null && trainingOk && (excluded == null || !excluded.Contains(id))) || captureCompact != null)
                     && validValue.GetBoolean() && HasMountedMarkers(root))
                 {
@@ -834,18 +1279,35 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                         {
                             if (captureCompact != null)
                             {
-                                try { captureCompact(episode); }
-                                catch (Exception exception) { throw new ArchiveCaptureException(exception); }
+                                try
+                                {
+                                    captureCompact(episode);
+                                }
+                                catch (Exception exception)
+                                {
+                                    throw new ArchiveCaptureException(exception);
+                                }
                             }
-                            if (trainer != null && (excluded == null || !excluded.Contains(id))) trainer.Observe(episode);
+
+                            if (trainer != null && (excluded == null || !excluded.Contains(id)))
+                            {
+                                trainer.Observe(episode);
+                            }
                         }
                     }
                     catch (JsonException exception)
                     {
-                        if (captureCompact != null) throw new ArchiveCaptureException(exception);
+                        if (captureCompact != null)
+                        {
+                            throw new ArchiveCaptureException(exception);
+                        }
+
                         /* A malformed episode is not training data. */
                     }
-                    catch (ArchiveCaptureException) { throw; }
+                    catch (ArchiveCaptureException)
+                    {
+                        throw;
+                    }
                     catch (Exception exception)
                     {
                         trainingOk = false;
@@ -853,10 +1315,20 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                     }
                 }
             }
-            catch (JsonException) { corrupt++; }
-            catch (InvalidDataException) { corrupt++; }
-            catch (IOException) { corrupt++; }
+            catch (JsonException)
+            {
+                corrupt++;
+            }
+            catch (InvalidDataException)
+            {
+                corrupt++;
+            }
+            catch (IOException)
+            {
+                corrupt++;
+            }
         }
+
         return (valid, wins, corrupt, trainingOk);
     }
 
@@ -894,10 +1366,14 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                     {
                         int required = checked((int)line.Length + length);
                         if (required > line.Capacity)
+                        {
                             line.Capacity = Math.Min(MaxRecordBytes + extraForBomAndCr, Math.Max(required, Math.Max(4096, line.Capacity * 2)));
+                        }
+
                         line.Write(chunk, offset, length);
                     }
                 }
+
                 if (newline >= 0)
                 {
                     byte[]? result = null;
@@ -906,23 +1382,40 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                         byte[] bytes = line.ToArray();
                         int start = first && bytes.Length >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf ? 3 : 0;
                         int endPosition = bytes.Length;
-                        if (endPosition > start && bytes[endPosition - 1] == '\r') endPosition--;
+                        if (endPosition > start && bytes[endPosition - 1] == '\r')
+                        {
+                            endPosition--;
+                        }
+
                         int recordLength = endPosition - start;
                         if (recordLength <= MaxRecordBytes)
                         {
-                            if (start == 0 && recordLength == bytes.Length) result = bytes;
-                            else { result = new byte[recordLength]; Buffer.BlockCopy(bytes, start, result, 0, recordLength); }
+                            if (start == 0 && recordLength == bytes.Length)
+                            {
+                                result = bytes;
+                            }
+                            else
+                            {
+                                result = new byte[recordLength];
+                                Buffer.BlockCopy(bytes, start, result, 0, recordLength);
+                            }
                         }
                     }
+
                     yield return result;
                     first = false;
                     oversized = false;
                     line.SetLength(0);
                 }
+
                 offset = newline < 0 ? read : newline + 1;
             }
         }
-        if (remaining != 0 || line.Length != 0 || oversized) throw new IOException("Committed journal prefix ended unexpectedly.");
+
+        if (remaining != 0 || line.Length != 0 || oversized)
+        {
+            throw new IOException("Committed journal prefix ended unexpectedly.");
+        }
     }
 
     // In schema 2 in-round actors and hits must carry explicit mounted/missile
@@ -933,29 +1426,61 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             || !schema.TryGetInt32(out int version) || version != 2
             || !root.TryGetProperty("DurationSeconds", out JsonElement durationValue) || durationValue.ValueKind != JsonValueKind.Number
             || !durationValue.TryGetDouble(out double duration) || !double.IsFinite(duration)
-            || !root.TryGetProperty("Frames", out JsonElement frames) || frames.ValueKind != JsonValueKind.Array) return false;
+            || !root.TryGetProperty("Frames", out JsonElement frames) || frames.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
         foreach (JsonElement frame in frames.EnumerateArray())
         {
             if (frame.ValueKind != JsonValueKind.Object || !frame.TryGetProperty("Seconds", out JsonElement timeValue)
-                || timeValue.ValueKind != JsonValueKind.Number || !timeValue.TryGetDouble(out double time) || !double.IsFinite(time)) return false;
-            if (time > duration) continue;
-            if (!frame.TryGetProperty("Actors", out JsonElement actors) || actors.ValueKind != JsonValueKind.Array) return false;
+                || timeValue.ValueKind != JsonValueKind.Number || !timeValue.TryGetDouble(out double time) || !double.IsFinite(time))
+            {
+                return false;
+            }
+
+            if (time > duration)
+            {
+                continue;
+            }
+
+            if (!frame.TryGetProperty("Actors", out JsonElement actors) || actors.ValueKind != JsonValueKind.Array)
+            {
+                return false;
+            }
+
             foreach (JsonElement actor in actors.EnumerateArray())
             {
                 if (actor.ValueKind != JsonValueKind.Object || !actor.TryGetProperty("IsMounted", out JsonElement mounted)
-                    || mounted.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) return false;
+                    || mounted.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return false;
+                }
             }
         }
-        if (!root.TryGetProperty("Events", out JsonElement events) || events.ValueKind != JsonValueKind.Array) return false;
+
+        if (!root.TryGetProperty("Events", out JsonElement events) || events.ValueKind != JsonValueKind.Array)
+        {
+            return false;
+        }
+
         foreach (JsonElement item in events.EnumerateArray())
         {
             if (item.ValueKind != JsonValueKind.Object || !item.TryGetProperty("Kind", out JsonElement kind)
                 || kind.ValueKind != JsonValueKind.String || !item.TryGetProperty("Seconds", out JsonElement eventTime)
-                || eventTime.ValueKind != JsonValueKind.Number || !eventTime.TryGetDouble(out double seconds) || !double.IsFinite(seconds)) return false;
+                || eventTime.ValueKind != JsonValueKind.Number || !eventTime.TryGetDouble(out double seconds) || !double.IsFinite(seconds))
+            {
+                return false;
+            }
+
             if (seconds <= duration && kind.GetString() == "hit"
                 && (!item.TryGetProperty("IsMissile", out JsonElement missile)
-                    || missile.ValueKind is not (JsonValueKind.True or JsonValueKind.False))) return false;
+                    || missile.ValueKind is not (JsonValueKind.True or JsonValueKind.False)))
+            {
+                return false;
+            }
         }
+
         return true;
     }
 
@@ -963,9 +1488,17 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
     // interrupted tail as a separate file before trimming it from the journal.
     private bool RecoverIncompleteTail(FileStream stream)
     {
-        if (stream.Length == 0) return false;
+        if (stream.Length == 0)
+        {
+            return false;
+        }
+
         stream.Position = stream.Length - 1;
-        if (stream.ReadByte() == '\n') return false;
+        if (stream.ReadByte() == '\n')
+        {
+            return false;
+        }
+
         long lastNewline = -1;
         var buffer = new byte[4096];
         for (long end = stream.Length; end > 0 && lastNewline < 0;)
@@ -976,10 +1509,16 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             int read = stream.Read(buffer, 0, length);
             for (int i = read - 1; i >= 0; i--)
             {
-                if (buffer[i] == (byte)'\n') { lastNewline = start + i; break; }
+                if (buffer[i] == (byte)'\n')
+                {
+                    lastNewline = start + i;
+                    break;
+                }
             }
+
             end = start;
         }
+
         long keep = lastNewline + 1;
         string recovery = Path.Combine(_directory, "episodes-incomplete-" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture) + ".partial");
         stream.Position = keep;
@@ -988,6 +1527,7 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             stream.CopyTo(saved);
             saved.Flush(flushToDisk: true);
         }
+
         stream.SetLength(keep);
         stream.Flush(flushToDisk: true);
         return true;
@@ -1002,10 +1542,18 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             stream.Position = before - 1;
             if (stream.ReadByte() != '\n')
             {
-                if (RecoverIncompleteTail(stream)) { lock (_gate) { _errors++; } }
+                if (RecoverIncompleteTail(stream))
+                {
+                    lock (_gate)
+                    {
+                        _errors++;
+                    }
+                }
+
                 before = stream.Length;
             }
         }
+
         stream.Position = before;
         try
         {
@@ -1016,7 +1564,15 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
         }
         catch
         {
-            try { stream.SetLength(before); stream.Flush(flushToDisk: true); } catch (Exception) { }
+            try
+            {
+                stream.SetLength(before);
+                stream.Flush(flushToDisk: true);
+            }
+            catch (Exception)
+            {
+            }
+
             throw;
         }
     }
@@ -1031,6 +1587,7 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
                 reason = string.Empty;
                 return true;
             }
+
             reason = "available disk space is below the recording reserve";
         }
         catch (Exception exception)
@@ -1039,71 +1596,144 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
             // risk filling the game server disk with more recordings.
             reason = "available disk space could not be checked (" + exception.GetType().Name + ")";
         }
+
         return false;
     }
 
     private static bool TryCopy(AdimiToolsAiLearningEpisode source, out AdimiToolsAiLearningEpisode? copy)
     {
         copy = null;
-        if (!Guid.TryParse(source.Id, out Guid id)) return false;
+        if (!Guid.TryParse(source.Id, out Guid id))
+        {
+            return false;
+        }
+
         bool truncated = source.Truncated;
         double duration = source.DurationSeconds;
-        if (!double.IsFinite(duration) || duration < 0d) { duration = 0d; truncated = true; }
+        if (!double.IsFinite(duration) || duration < 0d)
+        {
+            duration = 0d;
+            truncated = true;
+        }
+
         var result = new AdimiToolsAiLearningEpisode
         {
-            SchemaVersion = source.SchemaVersion, Id = id.ToString("N", CultureInfo.InvariantCulture),
-            ArenaId = source.ArenaId, ArenaKind = source.ArenaKind, Difficulty = source.Difficulty,
-            MatchType = BoundedText(source.MatchType, 32, ref truncated), WinningSide = source.WinningSide,
-            StartedUtc = BoundedText(source.StartedUtc, 64, ref truncated), DurationSeconds = duration,
-            Outcome = BoundedText(source.Outcome, 64, ref truncated), InitialPlayers = source.InitialPlayers,
-            InitialBots = source.InitialBots, Valid = source.Valid, SoloAttributedWin = source.SoloAttributedWin,
+            SchemaVersion = source.SchemaVersion,
+            Id = id.ToString("N", CultureInfo.InvariantCulture),
+            ArenaId = source.ArenaId,
+            ArenaKind = source.ArenaKind,
+            Difficulty = source.Difficulty,
+            MatchType = BoundedText(source.MatchType, 32, ref truncated),
+            WinningSide = source.WinningSide,
+            StartedUtc = BoundedText(source.StartedUtc, 64, ref truncated),
+            DurationSeconds = duration,
+            Outcome = BoundedText(source.Outcome, 64, ref truncated),
+            InitialPlayers = source.InitialPlayers,
+            InitialBots = source.InitialBots,
+            Valid = source.Valid,
+            SoloAttributedWin = source.SoloAttributedWin,
         };
         int actors = 0;
         List<AdimiToolsAiLearningFrame>? sourceFrames = source.Frames;
-        if (sourceFrames == null) truncated = true;
+        if (sourceFrames == null)
+        {
+            truncated = true;
+        }
         else
         {
             for (int i = 0; i < sourceFrames.Count; i++)
             {
-                if (i >= MaxFrames) { truncated = true; break; }
+                if (i >= MaxFrames)
+                {
+                    truncated = true;
+                    break;
+                }
+
                 AdimiToolsAiLearningFrame? frame = sourceFrames[i];
-                if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Actors == null) { truncated = true; continue; }
+                if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Actors == null)
+                {
+                    truncated = true;
+                    continue;
+                }
+
                 var frameCopy = new AdimiToolsAiLearningFrame { Seconds = frame.Seconds };
                 foreach (AdimiToolsAiLearningActor? actor in frame.Actors)
                 {
-                    if (actors >= MaxActorSnapshots) { truncated = true; break; }
-                    if (actor == null || !ActorFinite(actor)) { truncated = true; continue; }
+                    if (actors >= MaxActorSnapshots)
+                    {
+                        truncated = true;
+                        break;
+                    }
+
+                    if (actor == null || !ActorFinite(actor))
+                    {
+                        truncated = true;
+                        continue;
+                    }
+
                     frameCopy.Actors.Add(CopyActor(actor, ref truncated));
                     actors++;
                 }
+
                 result.Frames.Add(frameCopy);
             }
         }
 
         List<AdimiToolsAiLearningEvent>? sourceEvents = source.Events;
-        if (sourceEvents == null) truncated = true;
+        if (sourceEvents == null)
+        {
+            truncated = true;
+        }
         else
         {
             for (int i = 0; i < sourceEvents.Count; i++)
             {
-                if (i >= MaxEvents) { truncated = true; break; }
+                if (i >= MaxEvents)
+                {
+                    truncated = true;
+                    break;
+                }
+
                 AdimiToolsAiLearningEvent? item = sourceEvents[i];
-                if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !EventFinite(item)) { truncated = true; continue; }
+                if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !EventFinite(item))
+                {
+                    truncated = true;
+                    continue;
+                }
+
                 result.Events.Add(new AdimiToolsAiLearningEvent
                 {
-                    Kind = BoundedText(item.Kind, 64, ref truncated), Seconds = item.Seconds, AttackerId = item.AttackerId,
-                    VictimId = item.VictimId, IsBlocked = item.IsBlocked, Damage = item.Damage, RemovalState = item.RemovalState,
-                    IsMissile = item.IsMissile, ThrustTipHit = item.ThrustTipHit, AttackDirection = item.AttackDirection,
+                    Kind = BoundedText(item.Kind, 64, ref truncated),
+                    Seconds = item.Seconds,
+                    AttackerId = item.AttackerId,
+                    VictimId = item.VictimId,
+                    IsBlocked = item.IsBlocked,
+                    Damage = item.Damage,
+                    RemovalState = item.RemovalState,
+                    IsMissile = item.IsMissile,
+                    ThrustTipHit = item.ThrustTipHit,
+                    AttackDirection = item.AttackDirection,
                     AttackerWeaponClass = BoundedText(item.AttackerWeaponClass, 64, ref truncated),
                     IsAlternativeAttack = item.IsAlternativeAttack,
-                    StrikeType = item.StrikeType, WeaponSlot = item.WeaponSlot, AttackProgress = item.AttackProgress,
-                    ShotX = item.ShotX, ShotY = item.ShotY, ShotZ = item.ShotZ,
-                    ShotVelocityX = item.ShotVelocityX, ShotVelocityY = item.ShotVelocityY, ShotVelocityZ = item.ShotVelocityZ,
+                    StrikeType = item.StrikeType,
+                    WeaponSlot = item.WeaponSlot,
+                    AttackProgress = item.AttackProgress,
+                    ShotX = item.ShotX,
+                    ShotY = item.ShotY,
+                    ShotZ = item.ShotZ,
+                    ShotVelocityX = item.ShotVelocityX,
+                    ShotVelocityY = item.ShotVelocityY,
+                    ShotVelocityZ = item.ShotVelocityZ,
                 });
             }
         }
+
         result.Truncated = truncated;
-        if (truncated) result.Valid = false;
+        if (truncated)
+        {
+            result.Valid = false;
+        }
+
         copy = result;
         return true;
     }
@@ -1111,21 +1741,46 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
     private static AdimiToolsAiLearningActor CopyActor(AdimiToolsAiLearningActor actor, ref bool truncated)
         => new()
         {
-            Id = actor.Id, IsPlayer = actor.IsPlayer, Side = actor.Side, PlayerToken = actor.IsPlayer && IsSafeToken(actor.PlayerToken) ? actor.PlayerToken.ToLowerInvariant() : string.Empty,
-            CharacterId = BoundedText(actor.CharacterId, 128, ref truncated), WeaponId = BoundedText(actor.WeaponId, 128, ref truncated),
+            Id = actor.Id,
+            IsPlayer = actor.IsPlayer,
+            Side = actor.Side,
+            PlayerToken = actor.IsPlayer && IsSafeToken(actor.PlayerToken) ? actor.PlayerToken.ToLowerInvariant() : string.Empty,
+            CharacterId = BoundedText(actor.CharacterId, 128, ref truncated),
+            WeaponId = BoundedText(actor.WeaponId, 128, ref truncated),
             WeaponClass = BoundedText(actor.WeaponClass, 64, ref truncated),
-            WeaponLength = actor.WeaponLength, IsMounted = actor.IsMounted, MountId = actor.IsMounted ? actor.MountId : -1,
-            MountX = actor.IsMounted ? actor.MountX : 0f, MountY = actor.IsMounted ? actor.MountY : 0f, MountZ = actor.IsMounted ? actor.MountZ : 0f,
-            MountLookX = actor.IsMounted ? actor.MountLookX : 0f, MountLookY = actor.IsMounted ? actor.MountLookY : 0f, MountLookZ = actor.IsMounted ? actor.MountLookZ : 0f,
-            MountVelocityX = actor.IsMounted ? actor.MountVelocityX : 0f, MountVelocityY = actor.IsMounted ? actor.MountVelocityY : 0f,
-            MountHealth = actor.IsMounted ? actor.MountHealth : 0f, MountHealthLimit = actor.IsMounted ? actor.MountHealthLimit : 0f,
-            X = actor.X, Y = actor.Y, Z = actor.Z, LookX = actor.LookX, LookY = actor.LookY, LookZ = actor.LookZ,
-            VelocityX = actor.VelocityX, VelocityY = actor.VelocityY, Health = actor.Health, HealthLimit = actor.HealthLimit,
-            MoveInputX = actor.MoveInputX, MoveInputY = actor.MoveInputY,
-            MountInputX = actor.IsMounted ? actor.MountInputX : 0f, MountInputY = actor.IsMounted ? actor.MountInputY : 0f,
-            ActionType = actor.ActionType, ActionStage = actor.ActionStage, ActionDirection = actor.ActionDirection,
+            WeaponLength = actor.WeaponLength,
+            IsMounted = actor.IsMounted,
+            MountId = actor.IsMounted ? actor.MountId : -1,
+            MountX = actor.IsMounted ? actor.MountX : 0f,
+            MountY = actor.IsMounted ? actor.MountY : 0f,
+            MountZ = actor.IsMounted ? actor.MountZ : 0f,
+            MountLookX = actor.IsMounted ? actor.MountLookX : 0f,
+            MountLookY = actor.IsMounted ? actor.MountLookY : 0f,
+            MountLookZ = actor.IsMounted ? actor.MountLookZ : 0f,
+            MountVelocityX = actor.IsMounted ? actor.MountVelocityX : 0f,
+            MountVelocityY = actor.IsMounted ? actor.MountVelocityY : 0f,
+            MountHealth = actor.IsMounted ? actor.MountHealth : 0f,
+            MountHealthLimit = actor.IsMounted ? actor.MountHealthLimit : 0f,
+            X = actor.X,
+            Y = actor.Y,
+            Z = actor.Z,
+            LookX = actor.LookX,
+            LookY = actor.LookY,
+            LookZ = actor.LookZ,
+            VelocityX = actor.VelocityX,
+            VelocityY = actor.VelocityY,
+            Health = actor.Health,
+            HealthLimit = actor.HealthLimit,
+            MoveInputX = actor.MoveInputX,
+            MoveInputY = actor.MoveInputY,
+            MountInputX = actor.IsMounted ? actor.MountInputX : 0f,
+            MountInputY = actor.IsMounted ? actor.MountInputY : 0f,
+            ActionType = actor.ActionType,
+            ActionStage = actor.ActionStage,
+            ActionDirection = actor.ActionDirection,
             ActionProgress = actor.ActionProgress,
-            MovementFlags = actor.MovementFlags, EventFlags = actor.EventFlags,
+            MovementFlags = actor.MovementFlags,
+            EventFlags = actor.EventFlags,
         };
 
     private static bool IsSafeToken(string? value)
@@ -1133,8 +1788,17 @@ internal sealed partial class AdimiToolsAiLearningStoreInstance
 
     private static string BoundedText(string? value, int length, ref bool truncated)
     {
-        if (value == null) { truncated = true; return string.Empty; }
-        if (value.Length <= length) return value;
+        if (value == null)
+        {
+            truncated = true;
+            return string.Empty;
+        }
+
+        if (value.Length <= length)
+        {
+            return value;
+        }
+
         truncated = true;
         return value.Substring(0, length);
     }

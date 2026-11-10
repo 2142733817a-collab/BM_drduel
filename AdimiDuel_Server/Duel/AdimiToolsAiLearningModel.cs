@@ -23,10 +23,26 @@ internal sealed class AdimiToolsAiLearnedPolicy
     // Matches Agent.UsageDirection: 0 up, 1 down, 2 left, 3 right.
     public int PickDirection(double randomUnit)
     {
-        if (!double.IsFinite(randomUnit) || randomUnit < 0d || randomUnit >= 1d) return -1;
-        if (randomUnit < _upEnd) return 0;
-        if (randomUnit < _downEnd) return 1;
-        if (randomUnit < _leftEnd) return 2;
+        if (!double.IsFinite(randomUnit) || randomUnit < 0d || randomUnit >= 1d)
+        {
+            return -1;
+        }
+
+        if (randomUnit < _upEnd)
+        {
+            return 0;
+        }
+
+        if (randomUnit < _downEnd)
+        {
+            return 1;
+        }
+
+        if (randomUnit < _leftEnd)
+        {
+            return 2;
+        }
+
         return 3;
     }
 }
@@ -110,12 +126,14 @@ internal static class AdimiToolsAiTrainingSampleCodec
             ExactObject(ai, "Players", "Bots", "AveragePlayerHealth", "AverageBotHealth", "Duration", "TotalTeamDamage", "Contributors");
             ContributorShape(ai.GetProperty("Contributors"));
         }
+
         if (pvp.ValueKind != JsonValueKind.Null)
         {
             ExactObject(pvp, "Mode", "Winners", "Losers", "WinnerHealthBand", "LoserHealthBand", "WinnerWeapons", "LoserWeapons",
                 "LoserInitialHealth", "WinnerDamage", "MutualWindows", "TotalWindows", "MovingMutualWindows", "Contributors");
             ContributorShape(pvp.GetProperty("Contributors"));
         }
+
         AdimiToolsAiTrainingSample? sample = JsonSerializer.Deserialize<AdimiToolsAiTrainingSample>(bytes);
         Validate(sample);
         return sample!;
@@ -126,7 +144,11 @@ internal static class AdimiToolsAiTrainingSampleCodec
     internal static AdimiToolsAiLearningTrainer Rebuild(IEnumerable<AdimiToolsAiTrainingSample> samples,
         long expectedLastSequence, IReadOnlySet<Guid>? excluded = null)
     {
-        if (samples == null) throw new ArgumentNullException(nameof(samples));
+        if (samples == null)
+        {
+            throw new ArgumentNullException(nameof(samples));
+        }
+
         Require(expectedLastSequence >= 0 && expectedLastSequence <= MaxSamples, "invalid compact expected sequence");
         Require(excluded == null || excluded.Count <= 25000, "too many excluded episodes");
         var trainer = new AdimiToolsAiLearningTrainer();
@@ -139,8 +161,12 @@ internal static class AdimiToolsAiTrainingSampleCodec
             previous = sample.Sequence;
             Guid id = Guid.ParseExact(sample.EpisodeId, "N");
             Require(seen.Count < MaxSamples && seen.Add(id), "duplicate ID or compact sample limit reached");
-            if (excluded == null || !excluded.Contains(id)) trainer.ObserveCompact(sample);
+            if (excluded == null || !excluded.Contains(id))
+            {
+                trainer.ObserveCompact(sample);
+            }
         }
+
         Require(previous == expectedLastSequence, "compact sample tail does not match committed sequence");
         return trainer;
     }
@@ -194,6 +220,7 @@ internal static class AdimiToolsAiTrainingSampleCodec
                 "invalid compact contributor");
             attributed += contributor!.DamageDealt;
         }
+
         Require(double.IsFinite(attributed) && attributed <= totalDamage * (1d + 1e-10d), "invalid compact attributed damage");
     }
 
@@ -201,7 +228,9 @@ internal static class AdimiToolsAiTrainingSampleCodec
     {
         Require(array.ValueKind == JsonValueKind.Array && array.GetArrayLength() <= 255, "invalid compact contributor array");
         foreach (JsonElement contributor in array.EnumerateArray())
+        {
             ExactObject(contributor, "InitialHealth", "DamageTaken", "DamageDealt", "DirectionTotal", "Up", "Down", "Left", "Right");
+        }
     }
 
     private static void ExactObject(JsonElement element, params string[] names)
@@ -209,13 +238,19 @@ internal static class AdimiToolsAiTrainingSampleCodec
         Require(element.ValueKind == JsonValueKind.Object, "invalid compact object");
         var remaining = new HashSet<string>(names, StringComparer.Ordinal);
         foreach (JsonProperty property in element.EnumerateObject())
+        {
             Require(remaining.Remove(property.Name), "unknown or duplicate compact field");
+        }
+
         Require(remaining.Count == 0, "missing compact field");
     }
 
     private static void Require(bool condition, string message)
     {
-        if (!condition) throw new InvalidDataException(message);
+        if (!condition)
+        {
+            throw new InvalidDataException(message);
+        }
     }
 }
 
@@ -244,9 +279,21 @@ internal sealed class AdimiToolsAiLearningTrainer
 
     internal bool Observe(AdimiToolsAiLearningEpisode episode)
     {
-        if (episode == null) return false;
-        if (episode.MatchType is "pvp" or "team_pvp") return ObservePvp(episode);
-        if (!TryExtract(episode, out Sample sample)) return false;
+        if (episode == null)
+        {
+            return false;
+        }
+
+        if (episode.MatchType is "pvp" or "team_pvp")
+        {
+            return ObservePvp(episode);
+        }
+
+        if (!TryExtract(episode, out Sample sample))
+        {
+            return false;
+        }
+
         ApplyAi(sample);
         return true;
     }
@@ -262,7 +309,10 @@ internal sealed class AdimiToolsAiLearningTrainer
             double damageFraction = Math.Clamp(player.DamageTaken / player.InitialHealth, 0d, 1d);
             double participation = player.DamageDealt / sample.TotalTeamDamage;
             double weight = speedWeight * Math.Clamp(1d - .5d * damageFraction, .5d, 1d) * participation;
-            for (int i = 0; i < 4; i++) _weights[i] += weight * player.Directions[i] / player.DirectionTotal;
+            for (int i = 0; i < 4; i++)
+            {
+                _weights[i] += weight * player.Directions[i] / player.DirectionTotal;
+            }
         }
 
         long groupCount = baseline.Count + 1;
@@ -272,7 +322,11 @@ internal sealed class AdimiToolsAiLearningTrainer
 
     private bool ObservePvp(AdimiToolsAiLearningEpisode episode)
     {
-        if (!TryExtractPvp(episode, out PvpSample sample)) return false;
+        if (!TryExtractPvp(episode, out PvpSample sample))
+        {
+            return false;
+        }
+
         ApplyPvp(sample);
         return true;
     }
@@ -293,8 +347,12 @@ internal sealed class AdimiToolsAiLearningTrainer
             double damageFraction = Math.Clamp(winner.DamageTaken / winner.InitialHealth, 0d, 1d);
             double participation = winner.DamageDealt / sample.WinnerDamage;
             double weight = roundWeight * Math.Clamp(1d - .5d * damageFraction, .5d, 1d) * participation;
-            for (int i = 0; i < 4; i++) _weights[i] += weight * winner.Directions[i] / winner.DirectionTotal;
+            for (int i = 0; i < 4; i++)
+            {
+                _weights[i] += weight * winner.Directions[i] / winner.DirectionTotal;
+            }
         }
+
         long count = baseline.Count + 1;
         _pvpGroups[sample.Group] = new PvpBaseline(count, baseline.MeanActiveWindows + (activeWindows - baseline.MeanActiveWindows) / count);
         CountSample();
@@ -309,12 +367,22 @@ internal sealed class AdimiToolsAiLearningTrainer
     {
         compact = null;
         if (sequence < 1 || sequence > AdimiToolsAiTrainingSampleCodec.MaxSamples)
+        {
             throw new InvalidDataException("compact sample sequence is outside the supported limit");
+        }
+
         if (episode == null || !Guid.TryParse(episode.Id, out Guid id))
+        {
             throw new InvalidDataException("compact sample requires a valid episode ID");
+        }
+
         if (episode.MatchType is "pvp" or "team_pvp")
         {
-            if (!TryExtractPvp(episode, out PvpSample sample)) return false;
+            if (!TryExtractPvp(episode, out PvpSample sample))
+            {
+                return false;
+            }
+
             compact = new AdimiToolsAiTrainingSample
             {
                 Version = AdimiToolsAiTrainingSampleCodec.Version,
@@ -341,7 +409,11 @@ internal sealed class AdimiToolsAiLearningTrainer
         }
         else
         {
-            if (!TryExtract(episode, out Sample sample)) return false;
+            if (!TryExtract(episode, out Sample sample))
+            {
+                return false;
+            }
+
             compact = new AdimiToolsAiTrainingSample
             {
                 Version = AdimiToolsAiTrainingSampleCodec.Version,
@@ -360,6 +432,7 @@ internal sealed class AdimiToolsAiLearningTrainer
                 },
             };
         }
+
         AdimiToolsAiTrainingSampleCodec.Validate(compact);
         return true;
     }
@@ -367,8 +440,14 @@ internal sealed class AdimiToolsAiLearningTrainer
     private static AdimiToolsAiTrainingContributor CompactContributor(double initial, double taken, double dealt, int total, int[] directions)
         => new()
         {
-            InitialHealth = initial, DamageTaken = taken, DamageDealt = dealt, DirectionTotal = total,
-            Up = directions[0], Down = directions[1], Left = directions[2], Right = directions[3],
+            InitialHealth = initial,
+            DamageTaken = taken,
+            DamageDealt = dealt,
+            DirectionTotal = total,
+            Up = directions[0],
+            Down = directions[1],
+            Left = directions[2],
+            Right = directions[3],
         };
 
     // An invalid persisted sample is a hard failure, not an ignorable record:
@@ -383,12 +462,14 @@ internal sealed class AdimiToolsAiLearningTrainer
             {
                 var track = new Track(true, contributor.InitialHealth, true)
                 {
-                    DamageTaken = contributor.DamageTaken, DamageDealt = contributor.DamageDealt,
+                    DamageTaken = contributor.DamageTaken,
+                    DamageDealt = contributor.DamageDealt,
                     DirectionTotal = contributor.DirectionTotal,
                 };
                 CopyDirections(contributor, track.Directions);
                 contributors.Add(track);
             }
+
             ApplyAi(new Sample(ai.Players, ai.Bots, ai.AveragePlayerHealth, ai.AverageBotHealth,
                 ai.Duration, ai.TotalTeamDamage, contributors));
         }
@@ -400,12 +481,14 @@ internal sealed class AdimiToolsAiLearningTrainer
             {
                 var track = new PvpTrack(0, contributor.InitialHealth, "")
                 {
-                    DamageTaken = contributor.DamageTaken, DamageDealt = contributor.DamageDealt,
+                    DamageTaken = contributor.DamageTaken,
+                    DamageDealt = contributor.DamageDealt,
                     DirectionTotal = contributor.DirectionTotal,
                 };
                 CopyDirections(contributor, track.Directions);
                 contributors.Add(track);
             }
+
             var group = new PvpGroup(pvp.Mode, pvp.Winners, pvp.Losers, pvp.WinnerHealthBand,
                 pvp.LoserHealthBand, pvp.WinnerWeapons, pvp.LoserWeapons);
             ApplyPvp(new PvpSample(group, pvp.LoserInitialHealth, pvp.WinnerDamage,
@@ -415,19 +498,29 @@ internal sealed class AdimiToolsAiLearningTrainer
 
     private static void CopyDirections(AdimiToolsAiTrainingContributor source, int[] target)
     {
-        target[0] = source.Up; target[1] = source.Down; target[2] = source.Left; target[3] = source.Right;
+        target[0] = source.Up;
+        target[1] = source.Down;
+        target[2] = source.Left;
+        target[3] = source.Right;
     }
 
     private void CountSample()
     {
         _samples++;
-        if (_samples >= 20 && (_samples - 20) % 5 == 0) Current = BuildPolicy();
+        if (_samples >= 20 && (_samples - 20) % 5 == 0)
+        {
+            Current = BuildPolicy();
+        }
     }
 
     private AdimiToolsAiLearnedPolicy BuildPolicy()
     {
         double total = _weights[0] + _weights[1] + _weights[2] + _weights[3];
-        if (!double.IsFinite(total) || total <= 0d) throw new InvalidOperationException("Invalid learned direction weights.");
+        if (!double.IsFinite(total) || total <= 0d)
+        {
+            throw new InvalidOperationException("Invalid learned direction weights.");
+        }
+
         // Half uniform prior bounds every direction to 12.5%..62.5%.
         double up = .125d + .5d * _weights[0] / total;
         double down = .125d + .5d * _weights[1] / total;
@@ -447,54 +540,116 @@ internal sealed class AdimiToolsAiLearningTrainer
             || episode.ArenaKind != 0 || episode.Difficulty != 3
             || !double.IsFinite(episode.DurationSeconds) || episode.DurationSeconds < .001d || episode.DurationSeconds > 600d
             || episode.Frames == null || episode.Frames.Count < 2 || episode.Frames.Count > 8192
-            || episode.Events == null || episode.Events.Count > 4096) return false;
+            || episode.Events == null || episode.Events.Count > 4096)
+        {
+            return false;
+        }
 
         AdimiToolsAiLearningFrame? first = episode.Frames[0];
-        if (first?.Actors == null || first.Actors.Count != episode.InitialPlayers + episode.InitialBots) return false;
+        if (first?.Actors == null || first.Actors.Count != episode.InitialPlayers + episode.InitialBots)
+        {
+            return false;
+        }
+
         var roster = new Dictionary<int, Track>();
         double initialPlayersHealth = 0d, initialBotsHealth = 0d;
         int players = 0, bots = 0;
         foreach (AdimiToolsAiLearningActor? actor in first.Actors)
         {
             if (actor == null || actor.IsMounted || !ValidHealth(actor) || roster.ContainsKey(actor.Id)
-                || (actor.Side != -1 && actor.Side != (actor.IsPlayer ? 0 : 1))) return false;
-            if (!actor.IsPlayer && actor.WeaponClass != GreatSword) return false;
+                || (actor.Side != -1 && actor.Side != (actor.IsPlayer ? 0 : 1)))
+            {
+                return false;
+            }
+
+            if (!actor.IsPlayer && actor.WeaponClass != GreatSword)
+            {
+                return false;
+            }
+
             var track = new Track(actor.IsPlayer, actor.Health, actor.WeaponClass == GreatSword);
             roster.Add(actor.Id, track);
-            if (actor.IsPlayer) { players++; initialPlayersHealth += actor.Health; }
-            else { bots++; initialBotsHealth += actor.Health; }
+            if (actor.IsPlayer)
+            {
+                players++;
+                initialPlayersHealth += actor.Health;
+            }
+            else
+            {
+                bots++;
+                initialBotsHealth += actor.Health;
+            }
         }
-        if (players != episode.InitialPlayers || bots != episode.InitialBots) return false;
+
+        if (players != episode.InitialPlayers || bots != episode.InitialBots)
+        {
+            return false;
+        }
 
         // A round's true death timestamps may occur after the last 50 ms frame.
         // Build them from events first so disappearing dead actors are allowed.
         double lastBotRemoval = -1d;
         foreach (AdimiToolsAiLearningEvent? item in episode.Events)
         {
-            if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !float.IsFinite(item.Damage) || item.Damage < 0f) return false;
-            if (item.Kind == "mount" || item.Kind == "dismount") return false;
-            if (item.Seconds > episode.DurationSeconds || item.Kind != "removal") continue;
+            if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !float.IsFinite(item.Damage) || item.Damage < 0f)
+            {
+                return false;
+            }
+
+            if (item.Kind == "mount" || item.Kind == "dismount")
+            {
+                return false;
+            }
+
+            if (item.Seconds > episode.DurationSeconds || item.Kind != "removal")
+            {
+                continue;
+            }
+
             if (!roster.TryGetValue(item.VictimId, out Track? victim) || !roster.TryGetValue(item.AttackerId, out Track? attacker)
-                || victim.IsPlayer == attacker.IsPlayer || victim.RemovedAt.HasValue) return false;
+                || victim.IsPlayer == attacker.IsPlayer || victim.RemovedAt.HasValue)
+            {
+                return false;
+            }
+
             victim.RemovedAt = item.Seconds;
-            if (!victim.IsPlayer) lastBotRemoval = Math.Max(lastBotRemoval, item.Seconds);
+            if (!victim.IsPlayer)
+            {
+                lastBotRemoval = Math.Max(lastBotRemoval, item.Seconds);
+            }
         }
+
         if (Math.Abs(lastBotRemoval - episode.DurationSeconds) > .001d
             || roster.Values.Any(t => !t.IsPlayer && !t.RemovedAt.HasValue)
-            || !roster.Values.Any(t => t.IsPlayer && !t.RemovedAt.HasValue)) return false;
+            || !roster.Values.Any(t => t.IsPlayer && !t.RemovedAt.HasValue))
+        {
+            return false;
+        }
 
         int inRoundFrames = 0;
         int snapshotCount = 0;
         double previousSeconds = -1d;
         foreach (AdimiToolsAiLearningFrame? frame in episode.Frames)
         {
-            if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Seconds < previousSeconds) return false;
+            if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Seconds < previousSeconds)
+            {
+                return false;
+            }
+
             previousSeconds = frame.Seconds;
             // Removal callback and round finalization may be separated by a tick.
             // A later frame can contain just the surviving player and must not
             // change the in-round health-loss estimate or attack distribution.
-            if (frame.Seconds > episode.DurationSeconds) continue;
-            if (frame.Actors == null || frame.Actors.Count == 0 || (snapshotCount += frame.Actors.Count) > 16384) return false;
+            if (frame.Seconds > episode.DurationSeconds)
+            {
+                continue;
+            }
+
+            if (frame.Actors == null || frame.Actors.Count == 0 || (snapshotCount += frame.Actors.Count) > 16384)
+            {
+                return false;
+            }
+
             inRoundFrames++;
             var seen = new HashSet<int>();
             foreach (AdimiToolsAiLearningActor? actor in frame.Actors)
@@ -503,55 +658,126 @@ internal sealed class AdimiToolsAiLearningTrainer
                     || actor.IsPlayer != track.IsPlayer || actor.IsMounted || !ValidHealth(actor)
                     || (actor.Side != -1 && actor.Side != (actor.IsPlayer ? 0 : 1))
                     || !float.IsFinite(actor.ActionProgress) || !float.IsFinite(actor.WeaponLength)
-                    || (track.RemovedAt.HasValue && frame.Seconds > track.RemovedAt.Value + .001d)) return false;
-                if (!actor.IsPlayer && actor.WeaponClass != GreatSword) return false;
-                if (!actor.IsPlayer) continue;
+                    || (track.RemovedAt.HasValue && frame.Seconds > track.RemovedAt.Value + .001d))
+                {
+                    return false;
+                }
+
+                if (!actor.IsPlayer && actor.WeaponClass != GreatSword)
+                {
+                    return false;
+                }
+
+                if (!actor.IsPlayer)
+                {
+                    continue;
+                }
+
                 track.LastHealth = actor.Health;
-                if (actor.WeaponClass != GreatSword) track.Eligible = false;
+                if (actor.WeaponClass != GreatSword)
+                {
+                    track.Eligible = false;
+                }
+
                 int direction = actor.ActionDirection;
                 bool ready = actor.WeaponClass == GreatSword && actor.ActionType == ReadyMelee
                     && (actor.ActionStage == AttackReady || actor.ActionStage == AttackQuickReady)
                     && direction >= 0 && direction < 4;
-                if (!ready) track.PreviousDirection = -1;
+                if (!ready)
+                {
+                    track.PreviousDirection = -1;
+                }
                 else
                 {
-                    if (direction != track.PreviousDirection) { track.Directions[direction]++; track.DirectionTotal++; }
+                    if (direction != track.PreviousDirection)
+                    {
+                        track.Directions[direction]++;
+                        track.DirectionTotal++;
+                    }
+
                     track.PreviousDirection = direction;
                 }
             }
+
             foreach (var pair in roster)
             {
                 if ((!pair.Value.RemovedAt.HasValue || frame.Seconds < pair.Value.RemovedAt.Value - .001d)
-                    && !seen.Contains(pair.Key)) return false;
+                    && !seen.Contains(pair.Key))
+                {
+                    return false;
+                }
             }
         }
-        if (inRoundFrames < 2) return false;
+
+        if (inRoundFrames < 2)
+        {
+            return false;
+        }
 
         double teamDamage = 0d;
         foreach (AdimiToolsAiLearningEvent? item in episode.Events)
         {
-            if (item == null || item.Kind != "hit" || item.IsBlocked || item.Seconds > episode.DurationSeconds) continue;
-            if (!roster.TryGetValue(item.VictimId, out Track? victim) || !roster.TryGetValue(item.AttackerId, out Track? attacker)) return false;
-            if (victim.RemovedAt.HasValue && item.Seconds > victim.RemovedAt.Value + .001d) continue;
-            if (victim.IsPlayer) victim.HitDamageTaken += item.Damage;
+            if (item == null || item.Kind != "hit" || item.IsBlocked || item.Seconds > episode.DurationSeconds)
+            {
+                continue;
+            }
+
+            if (!roster.TryGetValue(item.VictimId, out Track? victim) || !roster.TryGetValue(item.AttackerId, out Track? attacker))
+            {
+                return false;
+            }
+
+            if (victim.RemovedAt.HasValue && item.Seconds > victim.RemovedAt.Value + .001d)
+            {
+                continue;
+            }
+
+            if (victim.IsPlayer)
+            {
+                victim.HitDamageTaken += item.Damage;
+            }
             else if (attacker.IsPlayer)
             {
                 teamDamage += item.Damage;
                 // Projectile damage remains in the full-team denominator but
                 // cannot qualify a player's greatsword directions for training.
-                if (!item.IsMissile && item.AttackerWeaponClass == GreatSword && item.IsAlternativeAttack == false) attacker.DamageDealt += item.Damage;
+                if (!item.IsMissile && item.AttackerWeaponClass == GreatSword && item.IsAlternativeAttack == false)
+                {
+                    attacker.DamageDealt += item.Damage;
+                }
             }
         }
-        if (!double.IsFinite(teamDamage) || teamDamage <= 0d) return false;
+
+        if (!double.IsFinite(teamDamage) || teamDamage <= 0d)
+        {
+            return false;
+        }
+
         var contributors = new List<Track>();
         foreach (Track player in roster.Values.Where(t => t.IsPlayer))
         {
-            if (!double.IsFinite(player.DamageDealt) || !double.IsFinite(player.HitDamageTaken)) return false;
+            if (!double.IsFinite(player.DamageDealt) || !double.IsFinite(player.HitDamageTaken))
+            {
+                return false;
+            }
+
             player.DamageTaken = Math.Max(player.HitDamageTaken, Math.Max(0d, player.InitialHealth - player.LastHealth));
-            if (player.RemovedAt.HasValue) player.DamageTaken = Math.Max(player.DamageTaken, player.InitialHealth);
-            if (player.Eligible && player.DamageDealt > 0d && player.DirectionTotal > 0) contributors.Add(player);
+            if (player.RemovedAt.HasValue)
+            {
+                player.DamageTaken = Math.Max(player.DamageTaken, player.InitialHealth);
+            }
+
+            if (player.Eligible && player.DamageDealt > 0d && player.DirectionTotal > 0)
+            {
+                contributors.Add(player);
+            }
         }
-        if (contributors.Count == 0) return false;
+
+        if (contributors.Count == 0)
+        {
+            return false;
+        }
+
         sample = new Sample(players, bots, initialPlayersHealth / players, initialBotsHealth / bots, episode.DurationSeconds, teamDamage, contributors);
         return true;
     }
@@ -565,9 +791,17 @@ internal sealed class AdimiToolsAiLearningTrainer
             || episode.Outcome != (episode.WinningSide == 0 ? "side_a_win" : "side_b_win")
             || !double.IsFinite(episode.DurationSeconds) || episode.DurationSeconds < .001d || episode.DurationSeconds > 600d
             || episode.Frames == null || episode.Frames.Count < 2 || episode.Frames.Count > 8192
-            || episode.Events == null || episode.Events.Count > 4096) return false;
+            || episode.Events == null || episode.Events.Count > 4096)
+        {
+            return false;
+        }
+
         AdimiToolsAiLearningFrame? first = episode.Frames[0];
-        if (first?.Actors == null || first.Actors.Count != episode.InitialPlayers) return false;
+        if (first?.Actors == null || first.Actors.Count != episode.InitialPlayers)
+        {
+            return false;
+        }
+
         var roster = new Dictionary<int, PvpTrack>();
         int winnerCount = 0, loserCount = 0;
         double winnerHealth = 0d, loserHealth = 0d;
@@ -575,38 +809,89 @@ internal sealed class AdimiToolsAiLearningTrainer
         {
             if (actor == null || !actor.IsPlayer || actor.Side is not (0 or 1) || actor.IsMounted || !ValidHealth(actor)
                 || actor.WeaponClass != GreatSword || string.IsNullOrEmpty(actor.WeaponId) || actor.WeaponId.Length > 128
-                || !float.IsFinite(actor.WeaponLength) || roster.ContainsKey(actor.Id)) return false;
+                || !float.IsFinite(actor.WeaponLength) || roster.ContainsKey(actor.Id))
+            {
+                return false;
+            }
+
             var track = new PvpTrack(actor.Side, actor.Health, actor.WeaponId);
             roster.Add(actor.Id, track);
-            if (actor.Side == episode.WinningSide) { winnerCount++; winnerHealth += actor.Health; }
-            else { loserCount++; loserHealth += actor.Health; }
+            if (actor.Side == episode.WinningSide)
+            {
+                winnerCount++;
+                winnerHealth += actor.Health;
+            }
+            else
+            {
+                loserCount++;
+                loserHealth += actor.Health;
+            }
         }
-        if (winnerCount == 0 || loserCount == 0 || (episode.MatchType == "pvp" && (winnerCount != 1 || loserCount != 1))) return false;
+
+        if (winnerCount == 0 || loserCount == 0 || (episode.MatchType == "pvp" && (winnerCount != 1 || loserCount != 1)))
+        {
+            return false;
+        }
 
         double lastLoserRemoval = -1d;
         foreach (AdimiToolsAiLearningEvent? item in episode.Events)
         {
-            if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !float.IsFinite(item.Damage) || item.Damage < 0f) return false;
-            if (item.Kind is "mount" or "dismount" or "mount_hit" or "mount_removal" or "shot") return false;
-            if (item.Seconds > episode.DurationSeconds || item.Kind != "removal") continue;
+            if (item == null || !double.IsFinite(item.Seconds) || item.Seconds < 0d || !float.IsFinite(item.Damage) || item.Damage < 0f)
+            {
+                return false;
+            }
+
+            if (item.Kind is "mount" or "dismount" or "mount_hit" or "mount_removal" or "shot")
+            {
+                return false;
+            }
+
+            if (item.Seconds > episode.DurationSeconds || item.Kind != "removal")
+            {
+                continue;
+            }
+
             if (!roster.TryGetValue(item.VictimId, out PvpTrack? victim) || !roster.TryGetValue(item.AttackerId, out PvpTrack? attacker)
-                || victim.Side == attacker.Side || victim.RemovedAt.HasValue) return false;
+                || victim.Side == attacker.Side || victim.RemovedAt.HasValue)
+            {
+                return false;
+            }
+
             victim.RemovedAt = item.Seconds;
-            if (victim.Side != episode.WinningSide) lastLoserRemoval = Math.Max(lastLoserRemoval, item.Seconds);
+            if (victim.Side != episode.WinningSide)
+            {
+                lastLoserRemoval = Math.Max(lastLoserRemoval, item.Seconds);
+            }
         }
+
         if (Math.Abs(lastLoserRemoval - episode.DurationSeconds) > .001d
             || roster.Values.Any(t => t.Side != episode.WinningSide && !t.RemovedAt.HasValue)
-            || !roster.Values.Any(t => t.Side == episode.WinningSide && !t.RemovedAt.HasValue)) return false;
+            || !roster.Values.Any(t => t.Side == episode.WinningSide && !t.RemovedAt.HasValue))
+        {
+            return false;
+        }
 
         int validFrames = 0, snapshots = 0;
         double previousSeconds = -1d;
         ulong movementWindows = 0;
         foreach (AdimiToolsAiLearningFrame? frame in episode.Frames)
         {
-            if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Seconds < previousSeconds) return false;
+            if (frame == null || !double.IsFinite(frame.Seconds) || frame.Seconds < 0d || frame.Seconds < previousSeconds)
+            {
+                return false;
+            }
+
             previousSeconds = frame.Seconds;
-            if (frame.Seconds > episode.DurationSeconds) continue;
-            if (frame.Actors == null || frame.Actors.Count == 0 || (snapshots += frame.Actors.Count) > 16384) return false;
+            if (frame.Seconds > episode.DurationSeconds)
+            {
+                continue;
+            }
+
+            if (frame.Actors == null || frame.Actors.Count == 0 || (snapshots += frame.Actors.Count) > 16384)
+            {
+                return false;
+            }
+
             validFrames++;
             var seen = new HashSet<int>();
             foreach (AdimiToolsAiLearningActor? actor in frame.Actors)
@@ -617,48 +902,105 @@ internal sealed class AdimiToolsAiLearningTrainer
                     || !float.IsFinite(actor.WeaponLength) || !float.IsFinite(actor.ActionProgress)
                     || !float.IsFinite(actor.MoveInputX) || !float.IsFinite(actor.MoveInputY)
                     || !float.IsFinite(actor.VelocityX) || !float.IsFinite(actor.VelocityY)
-                    || (track.RemovedAt.HasValue && frame.Seconds > track.RemovedAt.Value + .001d)) return false;
+                    || (track.RemovedAt.HasValue && frame.Seconds > track.RemovedAt.Value + .001d))
+                {
+                    return false;
+                }
+
                 track.LastHealth = actor.Health;
-                if (track.Side != episode.WinningSide) continue;
+                if (track.Side != episode.WinningSide)
+                {
+                    continue;
+                }
+
                 if (actor.MoveInputX * actor.MoveInputX + actor.MoveInputY * actor.MoveInputY >= .01f
                     && actor.VelocityX * actor.VelocityX + actor.VelocityY * actor.VelocityY >= .01f)
+                {
                     movementWindows |= WindowMask(frame.Seconds);
+                }
+
                 int direction = actor.ActionDirection;
                 bool ready = actor.ActionType == ReadyMelee && (actor.ActionStage == AttackReady || actor.ActionStage == AttackQuickReady)
                     && direction >= 0 && direction < 4;
-                if (!ready) track.PreviousDirection = -1;
+                if (!ready)
+                {
+                    track.PreviousDirection = -1;
+                }
                 else
                 {
-                    if (direction != track.PreviousDirection) { track.Directions[direction]++; track.DirectionTotal++; }
+                    if (direction != track.PreviousDirection)
+                    {
+                        track.Directions[direction]++;
+                        track.DirectionTotal++;
+                    }
+
                     track.PreviousDirection = direction;
                 }
             }
+
             foreach (var pair in roster)
-                if ((!pair.Value.RemovedAt.HasValue || frame.Seconds < pair.Value.RemovedAt.Value - .001d) && !seen.Contains(pair.Key)) return false;
+            {
+                if ((!pair.Value.RemovedAt.HasValue || frame.Seconds < pair.Value.RemovedAt.Value - .001d) && !seen.Contains(pair.Key))
+                {
+                    return false;
+                }
+            }
         }
-        if (validFrames < 2) return false;
+
+        if (validFrames < 2)
+        {
+            return false;
+        }
 
         ulong winnerWindows = 0, loserWindows = 0;
         double winnerDamage = 0d;
         foreach (AdimiToolsAiLearningEvent? item in episode.Events)
         {
-            if (item == null || item.Kind != "hit" || item.Seconds > episode.DurationSeconds) continue;
-            if (item.IsMissile || item.AttackerWeaponClass != GreatSword || item.IsAlternativeAttack != false
-                || !roster.TryGetValue(item.VictimId, out PvpTrack? victim)
-                || !roster.TryGetValue(item.AttackerId, out PvpTrack? attacker)) return false;
-            if ((victim.RemovedAt.HasValue && item.Seconds > victim.RemovedAt.Value + .001d)
-                || (attacker.RemovedAt.HasValue && item.Seconds > attacker.RemovedAt.Value + .001d)) continue;
-            if (victim.Side == attacker.Side)
+            if (item == null || item.Kind != "hit" || item.Seconds > episode.DurationSeconds)
             {
-                if (!item.IsBlocked) victim.FriendlyDamage += item.Damage;
                 continue;
             }
+
+            if (item.IsMissile || item.AttackerWeaponClass != GreatSword || item.IsAlternativeAttack != false
+                || !roster.TryGetValue(item.VictimId, out PvpTrack? victim)
+                || !roster.TryGetValue(item.AttackerId, out PvpTrack? attacker))
+            {
+                return false;
+            }
+
+            if ((victim.RemovedAt.HasValue && item.Seconds > victim.RemovedAt.Value + .001d)
+                || (attacker.RemovedAt.HasValue && item.Seconds > attacker.RemovedAt.Value + .001d))
+            {
+                continue;
+            }
+
+            if (victim.Side == attacker.Side)
+            {
+                if (!item.IsBlocked)
+                {
+                    victim.FriendlyDamage += item.Damage;
+                }
+
+                continue;
+            }
+
             if (item.IsBlocked || item.Damage > 0f)
             {
-                if (attacker.Side == episode.WinningSide) winnerWindows |= WindowMask(item.Seconds);
-                else loserWindows |= WindowMask(item.Seconds);
+                if (attacker.Side == episode.WinningSide)
+                {
+                    winnerWindows |= WindowMask(item.Seconds);
+                }
+                else
+                {
+                    loserWindows |= WindowMask(item.Seconds);
+                }
             }
-            if (item.IsBlocked || item.Damage <= 0f) continue;
+
+            if (item.IsBlocked || item.Damage <= 0f)
+            {
+                continue;
+            }
+
             victim.EnemyDamageTaken += item.Damage;
             if (attacker.Side == episode.WinningSide)
             {
@@ -666,20 +1008,41 @@ internal sealed class AdimiToolsAiLearningTrainer
                 winnerDamage += item.Damage;
             }
         }
+
         ulong mutual = winnerWindows & loserWindows;
         int mutualWindows = BitOperations.PopCount(mutual);
         if (mutualWindows == 0 || !double.IsFinite(winnerDamage) || winnerDamage <= 0d
-            || roster.Values.Any(t => t.Side != episode.WinningSide && t.EnemyDamageTaken <= 0d)) return false;
+            || roster.Values.Any(t => t.Side != episode.WinningSide && t.EnemyDamageTaken <= 0d))
+        {
+            return false;
+        }
+
         var contributors = new List<PvpTrack>();
         foreach (PvpTrack winner in roster.Values.Where(t => t.Side == episode.WinningSide))
         {
-            if (!double.IsFinite(winner.DamageDealt) || !double.IsFinite(winner.EnemyDamageTaken) || !double.IsFinite(winner.FriendlyDamage)) return false;
+            if (!double.IsFinite(winner.DamageDealt) || !double.IsFinite(winner.EnemyDamageTaken) || !double.IsFinite(winner.FriendlyDamage))
+            {
+                return false;
+            }
+
             double healthEvidence = Math.Max(0d, winner.InitialHealth - winner.LastHealth - winner.FriendlyDamage);
             winner.DamageTaken = Math.Max(winner.EnemyDamageTaken, healthEvidence);
-            if (winner.RemovedAt.HasValue) winner.DamageTaken = Math.Max(winner.DamageTaken, winner.InitialHealth);
-            if (winner.DamageDealt > 0d && winner.DirectionTotal > 0) contributors.Add(winner);
+            if (winner.RemovedAt.HasValue)
+            {
+                winner.DamageTaken = Math.Max(winner.DamageTaken, winner.InitialHealth);
+            }
+
+            if (winner.DamageDealt > 0d && winner.DirectionTotal > 0)
+            {
+                contributors.Add(winner);
+            }
         }
-        if (contributors.Count == 0) return false;
+
+        if (contributors.Count == 0)
+        {
+            return false;
+        }
+
         ulong winnersWeapons = WeaponFingerprint(roster.Values.Where(t => t.Side == episode.WinningSide));
         ulong losersWeapons = WeaponFingerprint(roster.Values.Where(t => t.Side != episode.WinningSide));
         var group = new PvpGroup(episode.MatchType, winnerCount, loserCount, HealthBand(winnerHealth / winnerCount),
@@ -698,9 +1061,16 @@ internal sealed class AdimiToolsAiLearningTrainer
         ulong hash = 14695981039346656037UL;
         foreach (string id in tracks.Select(t => t.WeaponId).OrderBy(x => x, StringComparer.Ordinal))
         {
-            foreach (char character in id) { hash ^= character; hash *= prime; }
-            hash ^= 0xffff; hash *= prime;
+            foreach (char character in id)
+            {
+                hash ^= character;
+                hash *= prime;
+            }
+
+            hash ^= 0xffff;
+            hash *= prime;
         }
+
         return hash;
     }
 
@@ -713,8 +1083,12 @@ internal sealed class AdimiToolsAiLearningTrainer
     {
         internal Track(bool isPlayer, double initialHealth, bool eligible)
         {
-            IsPlayer = isPlayer; InitialHealth = initialHealth; LastHealth = initialHealth; Eligible = eligible;
+            IsPlayer = isPlayer;
+            InitialHealth = initialHealth;
+            LastHealth = initialHealth;
+            Eligible = eligible;
         }
+
         internal bool IsPlayer { get; }
         internal double InitialHealth { get; }
         internal double LastHealth { get; set; }
@@ -735,8 +1109,12 @@ internal sealed class AdimiToolsAiLearningTrainer
     {
         internal PvpTrack(int side, double initialHealth, string weaponId)
         {
-            Side = side; InitialHealth = initialHealth; LastHealth = initialHealth; WeaponId = weaponId;
+            Side = side;
+            InitialHealth = initialHealth;
+            LastHealth = initialHealth;
+            WeaponId = weaponId;
         }
+
         internal int Side { get; }
         internal string WeaponId { get; }
         internal double InitialHealth { get; }
