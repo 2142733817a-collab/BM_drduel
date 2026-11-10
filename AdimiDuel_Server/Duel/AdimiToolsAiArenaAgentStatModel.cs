@@ -1,3 +1,4 @@
+using System.Globalization;
 using TaleWorlds.Core;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
@@ -8,6 +9,10 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
 {
     public const int SkillBonus = 50;
     public const int HardSkill = 330;
+    internal const float HardMeleeReadyHoldMaximum = 0.5f;
+    internal const float NormalMeleeReadyHoldMaximum = 0.25f;
+    internal const float DefaultKickDesire = 0.45f;
+    internal static readonly float KickDesire = ParseKickDesire(Environment.GetEnvironmentVariable("ADIMI_AI_KICK_DESIRE"));
 
     public override int GetEffectiveSkill(Agent agent, SkillObject skill)
     {
@@ -56,6 +61,119 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
         }
 
         effects?.ApplyStats(agent, properties);
+        ApplyArenaCombatDecisions(agent, properties);
+        ApplyNormalMeleeReadyWindow(agent, properties);
+        ApplyHardMeleeTactics(agent, properties);
+        ApplyHardRoleNativeDecisions(agent, properties);
+    }
+
+    internal static float ParseKickDesire(string? setting)
+    {
+        return float.TryParse(setting, NumberStyles.Float, CultureInfo.InvariantCulture, out float value)
+            && value is >= 0f and <= 1f ? value : DefaultKickDesire;
+    }
+
+    internal static void ApplyHardRoleNativeDecisions(Agent agent, AgentDrivenProperties properties)
+    {
+        if (agent.Origin is not AdimiToolsAiArenaEnhancedOrigin { Difficulty: 3 } origin
+            || !agent.IsHuman || agent.Controller != AgentControllerType.AI)
+        {
+            return;
+        }
+
+        if (origin.NativeRole == AdimiToolsAiArenaNativeRole.HardArcher && !agent.HasMount)
+        {
+            // Native 1.4.8 derives these two ranger-lead-error properties from
+            // difficulty and skill. Native still owns target selection,
+            // trajectory, release, defensive actions and navigation.
+            properties.AiRangerLeadErrorMin = 0f;
+            properties.AiRangerLeadErrorMax = 0f;
+        }
+        else if (origin.NativeRole == AdimiToolsAiArenaNativeRole.HardCavalry && agent.HasMount
+            && float.IsFinite(properties.AiWeaponFavorMultiplierPolearm)
+            && properties.AiWeaponFavorMultiplierPolearm > 0f)
+        {
+            // A bounded preference, not an equipment lock or a forced thrust.
+            properties.AiWeaponFavorMultiplierPolearm = System.Math.Max(properties.AiWeaponFavorMultiplierPolearm, 1.15f);
+        }
+    }
+
+    internal static void ApplyHardMeleeTactics(Agent agent, AgentDrivenProperties properties)
+    {
+        if (agent.Origin is not AdimiToolsAiArenaEnhancedOrigin { Difficulty: 3 }
+            || !agent.IsHuman || agent.Controller != AgentControllerType.AI)
+        {
+            return;
+        }
+
+        EquipmentIndex index = agent.GetPrimaryWieldedItemIndex();
+        WeaponComponentData? usage = index == EquipmentIndex.None ? null : agent.Equipment[index].CurrentUsageItem;
+        if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon)
+        {
+            return;
+        }
+
+        // Give Native's ready-hold decision a modest, variable window. Native
+        // still decides when to defend, change attack direction and release.
+        properties.AIHoldingReadyMaxDuration = System.Math.Max(properties.AIHoldingReadyMaxDuration, HardMeleeReadyHoldMaximum);
+        properties.AIDecideOnRealizeEnemyBlockingAttackAbility = System.Math.Max(properties.AIDecideOnRealizeEnemyBlockingAttackAbility, 1f);
+    }
+
+    internal static void ApplyNormalMeleeReadyWindow(Agent agent, AgentDrivenProperties properties)
+    {
+        if (agent.Origin is not AdimiToolsAiArenaEnhancedOrigin { Difficulty: 2, NativeRole: AdimiToolsAiArenaNativeRole.Other }
+            || !agent.IsHuman || agent.Controller != AgentControllerType.AI || agent.HasMount)
+        {
+            return;
+        }
+
+        EquipmentIndex index = agent.GetPrimaryWieldedItemIndex();
+        WeaponComponentData? usage = index == EquipmentIndex.None ? null : agent.Equipment[index].CurrentUsageItem;
+        if (usage?.IsMeleeWeapon != true || usage.IsRangedWeapon) return;
+
+        // Gives Native a small chance to retain a visible ready long enough
+        // for a deliberate feint. It does not force every attack to be held.
+        properties.AIHoldingReadyMaxDuration = System.Math.Max(properties.AIHoldingReadyMaxDuration, NormalMeleeReadyHoldMaximum);
+    }
+
+    internal static void ApplyArenaCombatDecisions(Agent agent, AgentDrivenProperties properties)
+    {
+        if (agent.Origin is not AdimiToolsAiArenaOrigin
+            || !agent.IsHuman || agent.Controller != AgentControllerType.AI)
+        {
+            return;
+        }
+
+        // Reapply after every Native stat update, including weapon changes.
+        // These are decision inputs to the engine, not guaranteed outcomes;
+        // keep physical animation speeds, health and damage unchanged.
+        properties.AIAttackOnParryChance = System.Math.Max(properties.AIAttackOnParryChance, 0.12f);
+        properties.AIAttackOnDecideChance = System.Math.Max(properties.AIAttackOnDecideChance, 0.24f);
+        if (!agent.HasMount && KickDesire > 0f)
+        {
+            // Native chooses eligible targets and action timing. Zero keeps the stock value.
+            properties.AiKick = KickDesire;
+        }
+
+        if (properties.AiShootFreq > 0f && properties.AiShootFreq < 1f)
+        {
+            properties.AiShootFreq = System.Math.Min(1f, properties.AiShootFreq * 1.15f);
+        }
+
+        if (properties.AiWaitBeforeShootFactor > 0f)
+        {
+            properties.AiWaitBeforeShootFactor *= 0.85f;
+        }
+
+        if (agent.Origin is not AdimiToolsAiArenaEnhancedOrigin { Difficulty: 3 })
+        {
+            return;
+        }
+
+        properties.AIBlockOnDecideAbility = System.Math.Max(properties.AIBlockOnDecideAbility, 0.99f);
+        properties.AIParryOnDecideAbility = System.Math.Max(properties.AIParryOnDecideAbility, 0.98f);
+        properties.AIParryOnAttackingContinueAbility = System.Math.Max(properties.AIParryOnAttackingContinueAbility, 0.98f);
+        properties.AIDecideOnRealizeEnemyBlockingAttackAbility = System.Math.Max(properties.AIDecideOnRealizeEnemyBlockingAttackAbility, 0.96f);
     }
 
     private static bool IsEnhanced(Agent? agent)
@@ -153,9 +271,27 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
     }
 }
 
-internal sealed class AdimiToolsAiArenaEnhancedOrigin : BasicBattleAgentOrigin
+// Identifies only bots created by this training mode, including otherwise
+// ordinary and selectively skilled agents. It does not change troop skills.
+internal class AdimiToolsAiArenaOrigin : BasicBattleAgentOrigin
 {
-    public AdimiToolsAiArenaEnhancedOrigin(BasicCharacterObject character, int difficulty = 2, AdimiToolsAiArenaHardProfile? hardProfile = null)
+    public AdimiToolsAiArenaOrigin(BasicCharacterObject character)
+        : base(character)
+    {
+    }
+}
+
+internal enum AdimiToolsAiArenaNativeRole
+{
+    Other,
+    HardArcher,
+    HardCavalry,
+}
+
+internal sealed class AdimiToolsAiArenaEnhancedOrigin : AdimiToolsAiArenaOrigin
+{
+    public AdimiToolsAiArenaEnhancedOrigin(BasicCharacterObject character, int difficulty = 2, AdimiToolsAiArenaHardProfile? hardProfile = null,
+        AdimiToolsAiArenaNativeRole nativeRole = AdimiToolsAiArenaNativeRole.Other)
         : base(character)
     {
         if (difficulty < 1 || difficulty > 3)
@@ -165,9 +301,12 @@ internal sealed class AdimiToolsAiArenaEnhancedOrigin : BasicBattleAgentOrigin
 
         Difficulty = difficulty;
         HardProfile = hardProfile;
+        NativeRole = nativeRole;
     }
 
     public int Difficulty { get; }
 
     public AdimiToolsAiArenaHardProfile? HardProfile { get; }
+
+    public AdimiToolsAiArenaNativeRole NativeRole { get; }
 }

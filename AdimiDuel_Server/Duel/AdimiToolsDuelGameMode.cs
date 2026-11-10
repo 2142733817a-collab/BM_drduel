@@ -30,6 +30,7 @@ internal class AdimiToolsDuelGameMode : MissionBasedMultiplayerGameMode
                     AdimiToolsDuelLobbyComponent.CreateBehavior(),
                     new AdimiToolsMissionMultiplayerDuel(spawnComponent),
                     new AdimiToolsAiArenaBehavior(),
+                    new AdimiToolsPvpLearningBehavior(),
                     new AdimiToolsCultureSelectionBehavior(),
                     new AdimiToolsTeamBattleBehavior(),
                     new AdimiToolsTeamOrbSync(),

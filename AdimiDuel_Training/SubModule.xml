@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Module>
+  <Name value="Adimi AI 单机训练" />
+  <Id value="AdimiDuel_Training" />
+  <Version value="v0.1.0" />
+  <ModuleCategory value="Singleplayer" />
+  <SingleplayerModule value="true" />
+  <MultiplayerModule value="false" />
+  <DependedModules>
+    <DependedModule Id="Native" />
+    <DependedModule Id="SandBoxCore" />
+    <DependedModule Id="CustomBattle" />
+  </DependedModules>
+  <SubModules>
+    <SubModule>
+      <Name value="Adimi AI 单机训练" />
+      <DLLName value="AdimiDuel_Training.dll" />
+      <SubModuleClassType value="AdimiDuel_Training.SubModule" />
+      <Tags>
+        <Tag key="DedicatedServerType" value="none" />
+        <Tag key="IsNoRenderModeElement" value="false" />
+      </Tags>
+    </SubModule>
+  </SubModules>
+</Module>

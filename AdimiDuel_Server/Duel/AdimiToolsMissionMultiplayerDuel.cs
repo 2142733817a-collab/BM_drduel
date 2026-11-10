@@ -477,6 +477,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         public bool Lowering { get; set; }
         public bool RecoveryPending { get; set; }
         public double RetryAt { get; set; }
+        public double NextSweepAt { get; set; }
+        public int CompletedSweeps { get; set; }
     }
 
     private readonly Dictionary<DuelInfo, DuelBoundaryHold> _duelBoundaries = new();
@@ -1365,14 +1367,32 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
             try
             {
-                if (!hold.Lowering && (hold.RecoveryPending || duel.ChallengeEnded || !duel.IsDuelStillValid(doNotCheckAgent: true)))
+                bool duelFinished = duel.ChallengeEnded || !duel.IsDuelStillValid(doNotCheckAgent: true);
+                if (!hold.Lowering && (hold.RecoveryPending || duelFinished))
                 {
                     hold.Boundary.Move(duel, raised: false, immediately: hold.RecoveryPending);
                     hold.Lowering = true;
                 }
 
                 hold.Boundary.Tick(duel, now);
-                if (hold.Lowering && hold.Boundary.IsAtTarget(duel, raised: false))
+                if (!hold.Lowering)
+                {
+                    continue;
+                }
+
+                if (duelFinished && hold.CompletedSweeps < 2 && now >= hold.NextSweepAt)
+                {
+                    // Fading a corpse may drop gear after this tick. Keep the
+                    // boundary reserved until the follow-up sweep succeeds.
+                    hold.NextSweepAt = now + 1d;
+                    if (hold.Boundary.Owns(duel)
+                        && AdimiToolsAiArenaCleanup.TryClear(Mission, hold.Boundary.Area, clearUnoccupiedMounts: false))
+                    {
+                        hold.CompletedSweeps++;
+                    }
+                }
+
+                if ((!duelFinished || hold.CompletedSweeps >= 2) && hold.Boundary.IsAtTarget(duel, raised: false))
                 {
                     hold.Boundary.Release(duel);
                     _duelBoundaries.Remove(duel);
@@ -1738,6 +1758,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     private void CancelRestartDuel(DuelInfo duel)
     {
+        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(duel, null, interrupted: true); }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning cancel skipped: {exception.Message}"); }
         // Release the old series without deciding another round or touching
         // cached dead/deleted actors through the normal EndDuel path.
         _duelRequests.Remove(duel);
@@ -1836,12 +1858,31 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
     private void StartDuel(DuelInfo duel)
     {
         duel.OnDuelStarted();
+        try
+        {
+            Agent? requester = duel.RequesterPeer.ControlledAgent;
+            Agent? requestee = duel.RequesteePeer.ControlledAgent;
+            if (requester != null && requestee != null)
+                Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Begin(duel, "pvp", duel.DuelAreaIndex, new[]
+                {
+                    new AdimiToolsPvpLearningBehavior.Member(duel.RequesterPeer, requester, 0),
+                    new AdimiToolsPvpLearningBehavior.Member(duel.RequesteePeer, requestee, 1),
+                });
+        }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning start skipped: {exception.Message}"); }
     }
 
     private void EndDuel(DuelInfo duel)
     {
         _activeDuels.Remove(duel);
         duel.OnDuelEnded();
+        try
+        {
+            MissionPeer? learningWinner = duel.ChallengeWinnerPeer;
+            int? side = ReferenceEquals(learningWinner, duel.RequesterPeer) ? 0 : ReferenceEquals(learningWinner, duel.RequesteePeer) ? 1 : null;
+            Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(duel, side, interrupted: !duel.IsDuelStillValid(doNotCheckAgent: true));
+        }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"PvP learning end skipped: {exception.Message}"); }
         if (duel.ChallengeEnded)
         {
             TroopType troopType = TroopType.Invalid;

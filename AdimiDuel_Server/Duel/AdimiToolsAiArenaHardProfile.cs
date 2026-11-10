@@ -3,29 +3,32 @@ using System.Linq;
 using TaleWorlds.Core;
 using TaleWorlds.Library;
 using TaleWorlds.MountAndBlade;
+using TaleWorlds.ObjectSystem;
 
 namespace AdimiDuel_Server.Duel;
 
 internal sealed class AdimiToolsAiArenaHardProfile
 {
+    private const string GreatSwordId = "mp_vlandian_two_handed_sword";
     private static readonly string[] StandardCultures = { "vlandia", "empire", "khuzait", "aserai", "sturgia", "battania" };
+    private readonly EquipmentElement _greatSword;
 
-    private AdimiToolsAiArenaHardProfile(MultiplayerClassDivisions.MPHeroClass heroClass, IReadOnlyPerkObject selectedPerk, bool usesMoloch)
+    private AdimiToolsAiArenaHardProfile(MultiplayerClassDivisions.MPHeroClass heroClass, IReadOnlyPerkObject selectedPerk, bool usesMoloch, ItemObject greatSword)
     {
         Culture = heroClass.Culture;
         Character = heroClass.HeroCharacter;
-        Equipment = Character.Equipment.Clone();
+        _greatSword = new EquipmentElement(greatSword);
+        Equipment equipment = Character.Equipment.Clone();
         List<(EquipmentIndex, EquipmentElement)>? alternatives = selectedPerk.GetAlternativeEquipments(false, true, null!);
         if (alternatives != null)
         {
             foreach ((EquipmentIndex index, EquipmentElement item) in alternatives)
             {
-                Equipment[index] = item;
+                equipment[index] = item;
             }
         }
 
-        Equipment[EquipmentIndex.Horse] = default;
-        Equipment[EquipmentIndex.HorseHarness] = default;
+        Equipment = CreateSpawnEquipment(equipment);
         BaseHealthLimit = heroClass.Health * 2f;
         HealthLimit = (heroClass.Health + selectedPerk.GetHitpoints(false, true)) * 2f;
         ArmorHead = ArmorAfterBonus(heroClass, selectedPerk, DrivenProperty.ArmorHead);
@@ -117,9 +120,32 @@ internal sealed class AdimiToolsAiArenaHardProfile
             return false;
         }
 
-        profile = new AdimiToolsAiArenaHardProfile(heroClass, selectedPerk, aserai);
+        ItemObject? greatSword = MBObjectManager.Instance.GetObject<ItemObject>(GreatSwordId);
+        if (greatSword?.PrimaryWeapon?.WeaponClass != WeaponClass.TwoHandedSword)
+        {
+            reason = "原版联机巨剑不可用，无法生成困难 AI。";
+            return false;
+        }
+
+        profile = new AdimiToolsAiArenaHardProfile(heroClass, selectedPerk, aserai, greatSword);
         reason = string.Empty;
         return true;
+    }
+
+    internal Equipment CreateSpawnEquipment(Equipment source)
+    {
+        // Called after the shared preset/perk/variant pipeline so none of its
+        // weapon or mount overrides can replace the hard challenge's sword.
+        Equipment equipment = source.Clone();
+        for (EquipmentIndex slot = EquipmentIndex.WeaponItemBeginSlot; slot < EquipmentIndex.NumAllWeaponSlots; slot++)
+        {
+            equipment[slot] = EquipmentElement.Invalid;
+        }
+
+        equipment[EquipmentIndex.Weapon0] = _greatSword;
+        equipment[EquipmentIndex.Horse] = EquipmentElement.Invalid;
+        equipment[EquipmentIndex.HorseHarness] = EquipmentElement.Invalid;
+        return equipment;
     }
 
     private static IReadOnlyPerkObject? FindArmorPerk(MultiplayerClassDivisions.MPHeroClass heroClass)

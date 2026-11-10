@@ -33,6 +33,7 @@ internal sealed class AdimiToolsSharedArena
     private AdimiToolsSharedArena(VolumeBox area) => _area = area;
 
     public bool HasAiController => _boundaries.Any(boundary => boundary.IsAi);
+    public VolumeBox Area => _area;
     public GameEntity? DuelSpawn { get; private set; }
 
     public static AdimiToolsSharedArena? FindFreeDuelArena(Mission mission, Vec3 first, Vec3 second)

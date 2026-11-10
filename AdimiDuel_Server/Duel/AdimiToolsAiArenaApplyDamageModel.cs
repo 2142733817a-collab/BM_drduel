@@ -9,13 +9,15 @@ internal sealed class AdimiToolsAiArenaApplyDamageModel : MultiplayerAgentApplyD
 {
     public override float ApplyGeneralDamageModifiers(in AttackInformation attackInformation, in AttackCollisionData collisionData, float baseDamage)
     {
-        if (Mission.Current?.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.ShouldBlockDamage(attackInformation.AttackerAgent, attackInformation.VictimAgent) == true)
+        Agent? attacker = attackInformation.AttackerAgent;
+        Agent? victim = attackInformation.VictimAgent;
+        Mission? mission = Mission.Current;
+        if (mission?.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.ShouldBlockDamage(attacker, victim) == true
+            || mission?.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.ShouldBlockCoopFriendlyFire(attacker, victim) == true)
         {
             return 0f;
         }
 
-        Agent? attacker = attackInformation.AttackerAgent;
-        Agent? victim = attackInformation.VictimAgent;
         AdimiToolsAiPerkEffects? attackingAi = AdimiToolsAiPerkEffects.ForCombatant(attacker);
         AdimiToolsAiPerkEffects? defendingAi = AdimiToolsAiPerkEffects.ForCombatant(victim);
         bool legacyMoloch = attackingAi == null && AdimiToolsAiArenaStrikeMagnitudeModel.HasMoloch(in attackInformation);

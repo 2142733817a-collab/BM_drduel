@@ -15,6 +15,17 @@ internal class AdimiToolsDuelFt7Anvil : SynchedMissionObject
         finalDamage = damage;
         fireDamage = -1f;
         modifiedFireDamage = -1f;
+        if (GameNetwork.IsServer && GameEntity.HasTag(AdimiToolsDuelModes.CycleTag))
+        {
+            bool meleeInRange = attackerAgent != null && weapon.CurrentUsageItem is { IsMeleeWeapon: true, IsRangedWeapon: false }
+                && attackerAgent.Position.DistanceSquared(impactPosition) <= 36f;
+            if (Mission.Current?.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.TryHandleModeSelectorHit(
+                GameEntity.GlobalPosition, attackerAgent, meleeInRange) == true)
+            {
+                return false;
+            }
+        }
+
         if (attackerAgent != null && attackerAgent.IsActive() && attackerAgent.IsHuman)
         {
             MissionPeer? missionPeer = attackerAgent.MissionPeer;

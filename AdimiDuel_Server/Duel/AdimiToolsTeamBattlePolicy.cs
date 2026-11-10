@@ -37,7 +37,7 @@ internal enum AdimiToolsTeamBattlePhase
 
 internal sealed class AdimiToolsTeamBattleReadiness<T> where T : notnull
 {
-    public const double CountdownSeconds = 3d;
+    public const double CountdownSeconds = 6d;
     private readonly IEqualityComparer<T> _comparer;
     private HashSet<T> _sideA;
     private HashSet<T> _sideB;
@@ -143,6 +143,11 @@ internal sealed class AdimiToolsTeamBattleSeries
 {
     public AdimiToolsTeamBattleSeries(int targetWins)
     {
+        SetTargetWins(targetWins);
+    }
+
+    public void SetTargetWins(int targetWins)
+    {
         if (targetWins < 1 || targetWins > 3)
         {
             throw new ArgumentOutOfRangeException(nameof(targetWins));
@@ -151,7 +156,7 @@ internal sealed class AdimiToolsTeamBattleSeries
         TargetWins = targetWins;
     }
 
-    public int TargetWins { get; }
+    public int TargetWins { get; private set; }
     public int SideAWins { get; private set; }
     public int SideBWins { get; private set; }
     public int Draws { get; private set; }
@@ -182,10 +187,10 @@ internal sealed class AdimiToolsTeamBattleSeries
             SideBWins++;
         }
 
-        if (SideAWins >= TargetWins || SideBWins >= TargetWins)
+        if (SideAWins != SideBWins && Math.Max(SideAWins, SideBWins) >= TargetWins)
         {
             IsComplete = true;
-            WinnerSideA = SideAWins >= TargetWins;
+            WinnerSideA = SideAWins > SideBWins;
         }
 
         return IsComplete;

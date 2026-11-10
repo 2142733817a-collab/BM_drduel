@@ -14,7 +14,7 @@ public sealed class TeamNamesSubModule : MBSubModuleBase
     public override void OnMissionBehaviorInitialize(Mission mission)
     {
         base.OnMissionBehaviorInitialize(mission);
-        if (GameNetwork.IsClient && !GameNetwork.IsServer && mission.SceneName == "duel_empire_day"
+        if (GameNetwork.IsClient && !GameNetwork.IsServer
             && mission.GetMissionBehavior<MissionMultiplayerGameModeDuelClient>() != null)
         {
             mission.AddMissionBehavior(new TeamNamesView());
@@ -72,7 +72,7 @@ public sealed class TeamNameModel : ViewModel
         }
 
         float x = 0f, y = 0f, w = 0f;
-        Vec3 head = agent.GetWorldPosition().GetGroundVec3() + new Vec3(0f, 0f, agent.GetEyeGlobalHeight() + 0.18f);
+        Vec3 head = agent.GetEyeGlobalPosition() + new Vec3(0f, 0f, 0.32f);
         MBWindowManager.WorldToScreen(camera, head, ref x, ref y, ref w);
         bool visible = scale > 0f && w > 0f && x >= 0f && x <= Screen.RealScreenResolutionWidth
             && y >= 0f && y <= Screen.RealScreenResolutionHeight;
@@ -104,8 +104,9 @@ public sealed class TeamNameModel : ViewModel
 internal sealed class TeamNamesView : MissionView
 {
     private const string MovieName = "AdimiDuelTeamNames";
+    private const float NameRangeSquared = 35f * 35f;
     private readonly TeamNamesModel _model = new();
-    private readonly Dictionary<MissionDuelPeerMarkerVM, TeamNameModel> _shown = new();
+    private readonly Dictionary<MissionPeer, TeamNameModel> _shown = new();
     private readonly HashSet<MissionDuelPeerMarkerVM> _suppressedCards = new();
     private MultiplayerDuelVM? _duel;
     private GauntletLayer? _layer;
@@ -132,7 +133,7 @@ internal sealed class TeamNamesView : MissionView
         catch (Exception exception)
         {
             _failed = true;
-            RestoreCards();
+            ClearNames();
             RemoveLayer();
             Debug.Print($"Adimi Duel Team Names stopped: {exception.GetType().Name}: {exception.Message}");
         }
@@ -140,15 +141,14 @@ internal sealed class TeamNamesView : MissionView
 
     public override void OnMissionScreenFinalize()
     {
-        RestoreCards();
+        ClearNames();
         RemoveLayer();
         _duel = null;
         base.OnMissionScreenFinalize();
     }
 
-    private static bool IsTeammate(MissionPeer peer, Team team)
-        => !peer.IsMine && ReferenceEquals(peer.Team, team)
-            && peer.ControlledAgent is { } agent && agent.IsActive() && agent.Health > 0f && ReferenceEquals(agent.Team, team);
+    private static bool IsPrivatePlayerTeam(Team? team, Team lobbyTeam)
+        => team != null && team.Side == BattleSideEnum.Attacker && !ReferenceEquals(team, lobbyTeam);
 
     private void UpdateNames()
     {
@@ -158,10 +158,10 @@ internal sealed class TeamNamesView : MissionView
         // Adimi's simultaneous group matches use distinct private attacker teams.
         // The free team and normal Duel's defender teams are excluded.
         if (localPeer == null || local == null || !ReferenceEquals(local, Agent.Main) || !local.IsActive() || local.Health <= 0f
-            || team == null || team.Side != BattleSideEnum.Attacker || ReferenceEquals(team, Mission.AttackerTeam)
+            || team == null || !IsPrivatePlayerTeam(team, Mission.AttackerTeam)
             || !ReferenceEquals(team, localPeer.Team))
         {
-            RestoreCards();
+            ClearNames();
             return;
         }
 
@@ -170,35 +170,53 @@ internal sealed class TeamNamesView : MissionView
 
         if (_duel == null || !_duel.IsEnabled)
         {
-            RestoreCards();
+            ClearNames();
             return;
         }
 
-        var markers = _duel.Markers.Targets;
-        foreach (var marker in _shown.Keys.ToArray())
+        MissionPeer[] peers = VirtualPlayer.Peers<MissionPeer>().ToArray();
+        // Only the player team match has another private team of human peers
+        // as an enemy. TK can make our own team hostile to itself.
+        if (!peers.Any(peer => peer.Team is Team opponent && !ReferenceEquals(opponent, team)
+            && IsPrivatePlayerTeam(opponent, Mission.AttackerTeam) && team.IsEnemyOf(opponent)))
         {
-            if (!markers.Contains(marker) || !IsTeammate(marker.TargetPeer, team))
+            ClearNames();
+            return;
+        }
+
+        var nearby = peers.Where(peer => !peer.IsMine && ReferenceEquals(peer.Team, team)
+            && peer.ControlledAgent is { } agent && agent.IsActive() && agent.Health > 0f
+            && ReferenceEquals(agent.Team, team) && local.Position.DistanceSquared(agent.Position) <= NameRangeSquared).ToHashSet();
+        var markers = _duel.Markers.Targets;
+        foreach (MissionPeer peer in _shown.Keys.Where(peer => !nearby.Contains(peer)).ToArray())
+        {
+            _model.Names.Remove(_shown[peer]);
+            _shown.Remove(peer);
+        }
+
+        foreach (var marker in _suppressedCards.ToArray())
+        {
+            if (!markers.Contains(marker) || !nearby.Contains(marker.TargetPeer))
             {
                 RestoreCard(marker);
             }
         }
 
-        foreach (var marker in markers)
+        foreach (MissionPeer peer in nearby)
         {
-            if (!IsTeammate(marker.TargetPeer, team))
-            {
-                continue;
-            }
-
-            if (!_shown.TryGetValue(marker, out TeamNameModel? name))
+            if (!_shown.TryGetValue(peer, out TeamNameModel? name))
             {
                 EnsureLayer();
                 name = new TeamNameModel();
-                _shown.Add(marker, name);
+                _shown.Add(peer, name);
                 _model.Names.Add(name);
             }
 
-            name.Update(marker.TargetPeer.DisplayedName, marker.TargetPeer.ControlledAgent!, MissionScreen.CombatCamera, _layer!.UIContext.Scale);
+            name.Update(peer.DisplayedName, peer.ControlledAgent!, MissionScreen.CombatCamera, _layer!.UIContext.Scale);
+        }
+
+        foreach (var marker in markers.Where(marker => nearby.Contains(marker.TargetPeer)))
+        {
             marker.IsFocused = false;
             if (marker.IsEnabled)
             {
@@ -229,21 +247,21 @@ internal sealed class TeamNamesView : MissionView
 
     private void RestoreCard(MissionDuelPeerMarkerVM marker)
     {
-        _model.Names.Remove(_shown[marker]);
-        _shown.Remove(marker);
         if (_suppressedCards.Remove(marker) && _duel?.Markers.Targets.Contains(marker) == true)
         {
             marker.IsEnabled = _duel.Markers.IsEnabled && !marker.IsInDuel;
         }
     }
 
-    private void RestoreCards()
+    private void ClearNames()
     {
-        foreach (var marker in _shown.Keys.ToArray())
+        foreach (var marker in _suppressedCards.ToArray())
         {
             RestoreCard(marker);
         }
 
+        _shown.Clear();
+        _model.Names.Clear();
         _model.HasNames = false;
     }
 

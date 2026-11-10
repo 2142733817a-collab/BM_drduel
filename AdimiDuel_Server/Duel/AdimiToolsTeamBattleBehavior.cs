@@ -61,6 +61,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         public Team? TeamB { get; set; }
         public AdimiToolsTeamBattleSeries? Series { get; set; }
         public bool FriendlyFireEnabled { get; set; }
+        public int TargetWins { get; set; } = 1;
+        public double NextModeToggleAt { get; set; }
         public double NextFriendlyFireToggleAt { get; set; }
         public bool NormalCompletion { get; set; }
         public double? NextRoundAt { get; set; }
@@ -219,6 +221,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         {
             if (arena.DuelBoundary?.IsOwnedByOther(arena) == true)
             {
+                AbortLearningRound(arena);
                 ResetWaiting(arena);
                 continue;
             }
@@ -272,6 +275,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                     {
                         arena.Readiness.Start();
                         SetEnemies(arena, true);
+                        BeginLearningRound(arena);
                         string tk = arena.FriendlyFireEnabled ? "\n本场允许队友伤害。" : string.Empty;
                         Announce(arena, $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。{tk}");
                     }
@@ -283,6 +287,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             }
             catch (Exception exception)
             {
+                AbortLearningRound(arena);
                 arena.Disabled = true;
                 if (now >= arena.NextErrorLogAt)
                 {
@@ -404,26 +409,89 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
 
         Arena? arena = _arenas.FirstOrDefault(candidate => ReferenceEquals(candidate.Area, area));
+        if (arena != null && Mission.GetMissionBehavior<AdimiToolsAiArenaBehavior>()?.TryToggleCoopFriendlyFire(area, peer, attacker) == true)
+        {
+            return;
+        }
+
         if (arena == null || arena.Disabled || IsBusyElsewhere(peer, arena)
             || arena.DuelBoundary?.IsOwnedByOther(arena) == true || Mission.CurrentTime < arena.NextFriendlyFireToggleAt)
         {
             return;
         }
 
+        bool inCombat = arena.Readiness.Phase == AdimiToolsTeamBattlePhase.Running;
+        if (inCombat && !CanUseLiveSelector(arena, peer, attacker))
+        {
+            return;
+        }
+
         arena.NextFriendlyFireToggleAt = Mission.CurrentTime + 0.5d;
-        if (arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
+        if (!inCombat && arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
         {
             Notify(peer, "本场名单已锁定，无法切换队友伤害。");
             return;
         }
 
-        arena.FriendlyFireEnabled = !arena.FriendlyFireEnabled;
-        var (sideA, sideB) = CollectReadyPlayers(arena);
-        string notice = arena.FriendlyFireEnabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。";
-        foreach (MissionPeer recipient in sideA.Concat(sideB).Select(agent => agent.MissionPeer!).Append(peer).Distinct())
+        bool enabled = !arena.FriendlyFireEnabled;
+        if (inCombat)
+        {
+            var failures = new List<Exception>();
+            SetTeamSelfHostility(arena.TeamA!, arena.TeamB!, enabled, failures);
+            if (failures.Count != 0)
+            {
+                SetTeamSelfHostility(arena.TeamA!, arena.TeamB!, arena.FriendlyFireEnabled, failures);
+                AdimiToolsConsoleLog.Log($"Team TK switch failed: {new AggregateException(failures).Message}");
+                Notify(peer, "队友 TK 切换失败。");
+                return;
+            }
+        }
+
+        arena.FriendlyFireEnabled = enabled;
+        string notice = enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。";
+        foreach (MissionPeer recipient in GetSelectorRecipients(arena, peer, inCombat))
         {
             Notify(recipient, notice);
         }
+    }
+
+    internal bool TryHandleModeSelectorHit(Vec3 position, Agent? attacker, bool meleeInRange)
+    {
+        var matches = _arenas.Where(arena => arena.Area.IsPointIn(position)).Take(2).ToArray();
+        if (matches.Length == 0)
+        {
+            return false;
+        }
+
+        Arena arena = matches[0];
+        if (matches.Length != 1 || !meleeInRange || !GameNetwork.IsServer || _duelMode == null
+            || arena.Disabled || !IsLiving(attacker) || !attacker!.IsHuman
+            || attacker.MissionPeer is not MissionPeer peer || !ReferenceEquals(peer.ControlledAgent, attacker)
+            || peer.GetNetworkPeer() is not { IsConnectionActive: true, IsSynchronized: true }
+            || !arena.Area.IsPointIn(Ground(attacker)) || IsBusyElsewhere(peer, arena)
+            || arena.Shared?.IsOwnedByOther(arena) == true || arena.DuelBoundary?.IsOwnedByOther(arena) == true
+            || Mission.CurrentTime < arena.NextModeToggleAt)
+        {
+            return true;
+        }
+
+        bool inCombat = arena.Readiness.Phase == AdimiToolsTeamBattlePhase.Running;
+        if (inCombat ? !CanUseLiveSelector(arena, peer, attacker) || arena.Series == null
+            : arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
+        {
+            return true;
+        }
+
+        arena.NextModeToggleAt = Mission.CurrentTime + 0.5d;
+        arena.TargetWins = AdimiToolsDuelModes.GetNextLimit(arena.TargetWins);
+        arena.Series?.SetTargetWins(arena.TargetWins);
+        string notice = $"此对局赛制已切换为{AdimiToolsDuelModes.GetModeName(arena.TargetWins)}。";
+        foreach (MissionPeer recipient in GetSelectorRecipients(arena, peer, inCombat))
+        {
+            Notify(recipient, notice);
+        }
+
+        return true;
     }
 
     internal bool CanYieldAiReadiness(VolumeBox? area) => !_stopped && _arenas.Any(arena =>
@@ -444,11 +512,12 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
     }
 
-    internal IReadOnlyList<MissionPeer> FindAiParticipants(VolumeBox area, MissionPeer owner)
+    internal IReadOnlyList<MissionPeer> FindAiParticipants(VolumeBox area, MissionPeer owner, object? aiReservation = null)
     {
         Arena? arena = _arenas.FirstOrDefault(candidate => ReferenceEquals(candidate.Area, area));
         if (_stopped || _duelMode == null || arena == null || arena.Disabled
-            || arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing || arena.DuelBoundary?.IsOwnedByOther(arena) == true)
+            || arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing
+            || arena.DuelBoundary?.IsOwnedByOther(aiReservation ?? arena) == true)
         {
             return Array.Empty<MissionPeer>();
         }
@@ -488,9 +557,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             Attempt(() => arena.TeamB.SetIsEnemyOf(arena.TeamA, active), failures);
             if (arena.FriendlyFireEnabled)
             {
-                // Stock Duel uses self-hostility to allow hits within one team.
-                Attempt(() => arena.TeamA.SetIsEnemyOf(arena.TeamA, active), failures);
-                Attempt(() => arena.TeamB.SetIsEnemyOf(arena.TeamB, active), failures);
+                SetTeamSelfHostility(arena.TeamA, arena.TeamB, active, failures);
             }
 
             if (failures.Count != 0)
@@ -500,14 +567,28 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
     }
 
-    private static void Notify(MissionPeer peer, string message, bool playSound = false)
+    private static void SetTeamSelfHostility(Team sideA, Team sideB, bool active, List<Exception> failures)
+    {
+        // Stock Duel uses self-hostility to allow hits within one team.
+        Attempt(() => sideA.SetIsEnemyOf(sideA, active), failures);
+        Attempt(() => sideB.SetIsEnemyOf(sideB, active), failures);
+    }
+
+    private static void Notify(MissionPeer peer, string message, bool playSound = false, bool ordinaryChat = false)
     {
         var network = peer.GetNetworkPeer();
         if (network?.IsConnectionActive == true)
         {
             try
             {
-                AdimiToolsNotifier.ServerSendAiStatusToPlayer(network, message, playSound);
+                if (ordinaryChat)
+                {
+                    AdimiToolsNotifier.ServerSendGuidanceToPlayer(network, message, playSound);
+                }
+                else
+                {
+                    AdimiToolsNotifier.ServerSendAiStatusToPlayer(network, message, playSound);
+                }
             }
             catch (Exception exception)
             {
@@ -656,6 +737,21 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         return owners.ToArray();
     }
 
+    private bool CanUseLiveSelector(Arena arena, MissionPeer peer, Agent attacker)
+        => arena.Members.TryGetValue(peer, out Member? member) && !member.Withdrawn && !member.Eliminated
+            && IsLiveMember(arena, member) && arena.Area.IsPointIn(Ground(attacker));
+
+    private IEnumerable<MissionPeer> GetSelectorRecipients(Arena arena, MissionPeer peer, bool inCombat)
+    {
+        if (inCombat)
+        {
+            return arena.Members.Values.Where(participant => !participant.Withdrawn).Select(participant => participant.Peer);
+        }
+
+        var (sideA, sideB) = CollectReadyPlayers(arena);
+        return sideA.Concat(sideB).Select(agent => agent.MissionPeer!).Append(peer).Distinct();
+    }
+
     private (List<Agent> sideA, List<Agent> sideB) CollectReadyPlayers(Arena arena)
     {
         var a = new List<Agent>();
@@ -726,9 +822,11 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             }
         }
 
+        bool isCountdown = arena.Readiness.Phase == AdimiToolsTeamBattlePhase.CountingDown;
         string notice = arena.Readiness.Phase switch
         {
-            AdimiToolsTeamBattlePhase.CountingDown => $"A 队 {a.Count} 人 / B 队 {b.Count} 人：{Math.Max(0, (int)Math.Ceiling(arena.Readiness.CountdownEndsAt!.Value - now))} 秒后清场并升起屏障；进出准备区会重新计时。",
+            AdimiToolsTeamBattlePhase.CountingDown => AdimiToolsDuelGuidanceText.GetTeamCountdown(
+                a.Count, b.Count, Math.Max(0, (int)Math.Ceiling(arena.Readiness.CountdownEndsAt!.Value - now))),
             _ => "等待双方进入准备区，每队至少 1 人，人数无需相等。",
         };
         if (notice != arena.LastNotice || countdownRestarted)
@@ -736,7 +834,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             bool playCountdownSound = !ready && arena.Readiness.Phase == AdimiToolsTeamBattlePhase.CountingDown;
             foreach (Agent agent in a.Concat(b))
             {
-                Notify(agent.MissionPeer!, notice, playCountdownSound);
+                Notify(agent.MissionPeer!, notice, playCountdownSound, ordinaryChat: isCountdown);
             }
 
             arena.LastNotice = notice;
@@ -773,13 +871,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             });
         }
 
-        int[] selectedLimits = arena.Members.Keys.Select(peer =>
-            AdimiToolsMissionMultiplayerDuel.PlayersDuelConfig.TryGetValue(peer.Peer.Id, out var config) ? config.FirstToLimit : 0).ToArray();
-        arena.Series = new AdimiToolsTeamBattleSeries(AdimiToolsDuelModes.GetTeamLimit(selectedLimits));
-        bool commonMode = selectedLimits.All(limit => AdimiToolsDuelModes.IsValidLimit(limit) && limit == selectedLimits[0]);
-        string modeNotice = commonMode ? $"名单已锁定，所有参战者共同选择：{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}。"
-            : "参战者赛制设置不一致或无效，本场按1局定胜负。";
-        Announce(arena, modeNotice);
+        arena.Series = new AdimiToolsTeamBattleSeries(arena.TargetWins);
+        Announce(arena, $"名单已锁定，本场赛制为{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}。");
 
         if (!ClearBystanders(arena) || !AdimiToolsAiArenaCleanup.TryClear(Mission, arena.Area))
         {
@@ -857,6 +950,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         {
             return;
         }
+
+        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, sideAWon.HasValue ? (sideAWon.Value ? 0 : 1) : null,
+            interrupted: !sideAWon.HasValue || arena.Members.Values.Any(member => member.Withdrawn)); }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning end skipped: {exception.Message}"); }
 
         bool complete = arena.Series.RecordRound(sideAWon);
         if (complete)
@@ -943,6 +1040,7 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             arena.Readiness.StartNextRound();
             arena.NextRoundAt = null;
             SetEnemies(arena, true);
+            BeginLearningRound(arena);
             Announce(arena, $"组队对战第 {arena.Series!.RoundsPlayed + 1} 局开始，当前比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。");
         }
     }
@@ -1151,11 +1249,29 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
     private void End(Arena arena, string message, double now, bool immediately = false, bool normalCompletion = false)
     {
+        AbortLearningRound(arena);
         arena.NormalCompletion = normalCompletion;
         arena.Readiness.End();
         arena.EndedAt = immediately ? now - 3d : now;
         Announce(arena, message);
         FinishCleanup(arena, now);
+    }
+
+    private void AbortLearningRound(Arena arena)
+    {
+        try { Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Finish(arena, null, interrupted: true); }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning cancel skipped: {exception.Message}"); }
+    }
+
+    private void BeginLearningRound(Arena arena)
+    {
+        try
+        {
+            var members = arena.Members.Values.Where(member => !member.Withdrawn)
+                .Select(member => new AdimiToolsPvpLearningBehavior.Member(member.Peer, member.Agent, member.SideA ? 0 : 1)).ToArray();
+            Mission.GetMissionBehavior<AdimiToolsPvpLearningBehavior>()?.Begin(arena, "team_pvp", arena.Id, members);
+        }
+        catch (Exception exception) { AdimiToolsConsoleLog.Log($"Team PvP learning start skipped: {exception.Message}"); }
     }
 
     private void FinishCleanup(Arena arena, double now)
@@ -1232,6 +1348,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.Candidates.Clear();
         arena.Series = null;
         arena.FriendlyFireEnabled = false;
+        arena.TargetWins = 1;
+        arena.NextModeToggleAt = 0d;
         arena.NextFriendlyFireToggleAt = 0d;
         arena.NextRoundAt = null;
         arena.RespawnDeadline = 0d;

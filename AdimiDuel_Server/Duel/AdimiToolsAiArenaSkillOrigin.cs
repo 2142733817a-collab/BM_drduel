@@ -5,7 +5,7 @@ namespace AdimiDuel_Server.Duel;
 
 // Keep selected AI skill values private to this actor. The shared multiplayer
 // character remains unchanged for players and every other training profile.
-internal sealed class AdimiToolsAiArenaSkillOrigin : BasicBattleAgentOrigin
+internal sealed class AdimiToolsAiArenaSkillOrigin : AdimiToolsAiArenaOrigin
 {
     public AdimiToolsAiArenaSkillOrigin(BasicCharacterObject character, int? bowSkill, int? twoHandedSkill)
         : base(character)

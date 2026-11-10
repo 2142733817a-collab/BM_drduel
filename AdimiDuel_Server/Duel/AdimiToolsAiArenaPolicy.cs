@@ -8,6 +8,7 @@ internal enum AdimiToolsAiArenaKind
     Spear,
     Archer,
     HorseArcher,
+    Cavalry,
 }
 
 [System.Diagnostics.CodeAnalysis.SuppressMessage(
@@ -47,6 +48,7 @@ internal static class AdimiToolsAiArenaTags
     public const string SpearGroupPrefix = "adimi_ai_spear_group_";
     public const string ArcherGroupPrefix = "adimi_ai_archer_group_";
     public const string HorseArcherGroupPrefix = "adimi_ai_horse_archer_group_";
+    public const string CavalryGroupPrefix = "adimi_ai_cavalry_group_";
     public const string TriggerRoleTag = "adimi_ai_trigger";
     public const string EnhancedTriggerRoleTag = "adimi_ai_trigger_enhanced";
     public const string SimpleTriggerRoleTag = "adimi_ai_trigger_1";
@@ -54,11 +56,14 @@ internal static class AdimiToolsAiArenaTags
     public const string HardTriggerRoleTag = "adimi_ai_trigger_3";
     public const string SpearTriggerRoleTag = "adimi_ai_trigger_spear";
     public const string ArcherTriggerRoleTag = "adimi_ai_trigger_archer";
+    public const string HardArcherTriggerRoleTag = "adimi_ai_trigger_archer_hard";
     public const string HorseArcherTriggerRoleTag = "adimi_ai_trigger_horse_archer";
+    public const string HardCavalryTriggerRoleTag = "adimi_ai_trigger_cavalry_hard";
     public const string SpawnRoleTag = "adimi_ai_spawn";
     public const string SpearSpawnRoleTag = "adimi_ai_spear_spawn";
     public const string ArcherSpawnRoleTag = "adimi_ai_archer_spawn";
     public const string HorseArcherSpawnRoleTag = "adimi_ai_horse_archer_spawn";
+    public const string CavalrySpawnRoleTag = "adimi_ai_cavalry_spawn";
     public const string BarrierRoleTag = "adimi_ai_barrier";
     public const string LadderRoleTag = "adimi_ai_ladder";
     public const string AreaRoleTag = "adimi_ai_area";
@@ -103,7 +108,8 @@ internal static class AdimiToolsAiArenaTags
         difficulty = 0;
         kind = AdimiToolsAiArenaKind.Original;
         string[] tagArray = tags.ToArray();
-        string[] specialSelectors = tagArray.Where(tag => tag is SpearTriggerRoleTag or ArcherTriggerRoleTag or HorseArcherTriggerRoleTag)
+        string[] specialSelectors = tagArray.Where(tag => tag is SpearTriggerRoleTag or ArcherTriggerRoleTag
+            or HardArcherTriggerRoleTag or HorseArcherTriggerRoleTag or HardCavalryTriggerRoleTag)
             .Distinct(StringComparer.Ordinal).ToArray();
         if (specialSelectors.Length > 1)
         {
@@ -113,14 +119,16 @@ internal static class AdimiToolsAiArenaTags
         if (specialSelectors.Length == 1)
         {
             kind = specialSelectors[0] == SpearTriggerRoleTag ? AdimiToolsAiArenaKind.Spear
-                : specialSelectors[0] == ArcherTriggerRoleTag ? AdimiToolsAiArenaKind.Archer : AdimiToolsAiArenaKind.HorseArcher;
+                : specialSelectors[0] is ArcherTriggerRoleTag or HardArcherTriggerRoleTag ? AdimiToolsAiArenaKind.Archer
+                : specialSelectors[0] == HardCavalryTriggerRoleTag ? AdimiToolsAiArenaKind.Cavalry : AdimiToolsAiArenaKind.HorseArcher;
         }
 
         string[] selectors = tagArray.Where(tag => tag == SimpleTriggerRoleTag || tag == NormalTriggerRoleTag || tag == HardTriggerRoleTag)
             .Distinct(StringComparer.Ordinal).ToArray();
         if (selectors.Length > 1 || (kind != AdimiToolsAiArenaKind.Original && (selectors.Length != 0 || tagArray.Contains(EnhancedTriggerRoleTag)))
             || tagArray.Any(tag => IsTriggerTag(tag) && tag != TriggerRoleTag && tag != SpearTriggerRoleTag
-            && tag != ArcherTriggerRoleTag && tag != HorseArcherTriggerRoleTag
+            && tag != ArcherTriggerRoleTag && tag != HardArcherTriggerRoleTag && tag != HorseArcherTriggerRoleTag
+            && tag != HardCavalryTriggerRoleTag
             && tag != EnhancedTriggerRoleTag && tag != SimpleTriggerRoleTag && tag != NormalTriggerRoleTag && tag != HardTriggerRoleTag))
         {
             return false;
@@ -128,7 +136,8 @@ internal static class AdimiToolsAiArenaTags
 
         if (kind != AdimiToolsAiArenaKind.Original)
         {
-            difficulty = AdimiToolsAiArenaDifficulty.Simple;
+            difficulty = specialSelectors[0] is HardArcherTriggerRoleTag or HardCavalryTriggerRoleTag
+                ? AdimiToolsAiArenaDifficulty.Hard : AdimiToolsAiArenaDifficulty.Simple;
             return true;
         }
 
@@ -173,7 +182,8 @@ internal static class AdimiToolsAiArenaTags
         => tag.StartsWith(GroupPrefix, StringComparison.Ordinal)
             || tag.StartsWith(SpearGroupPrefix, StringComparison.Ordinal)
             || tag.StartsWith(ArcherGroupPrefix, StringComparison.Ordinal)
-            || tag.StartsWith(HorseArcherGroupPrefix, StringComparison.Ordinal);
+            || tag.StartsWith(HorseArcherGroupPrefix, StringComparison.Ordinal)
+            || tag.StartsWith(CavalryGroupPrefix, StringComparison.Ordinal);
 
     public static bool TryParseSceneGroupTag(string? tag, out AdimiToolsAiArenaSceneGroup group)
     {
@@ -199,6 +209,7 @@ internal static class AdimiToolsAiArenaTags
         AdimiToolsAiArenaKind.Spear => SpearSpawnRoleTag,
         AdimiToolsAiArenaKind.Archer => ArcherSpawnRoleTag,
         AdimiToolsAiArenaKind.HorseArcher => HorseArcherSpawnRoleTag,
+        AdimiToolsAiArenaKind.Cavalry => CavalrySpawnRoleTag,
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
@@ -209,7 +220,7 @@ internal static class AdimiToolsAiArenaTags
             return AdimiToolsAiArenaKind.Spear;
         }
 
-        if (tags.Contains(ArcherTriggerRoleTag) || tags.Contains(ArcherSpawnRoleTag))
+        if (tags.Contains(ArcherTriggerRoleTag) || tags.Contains(HardArcherTriggerRoleTag) || tags.Contains(ArcherSpawnRoleTag))
         {
             return AdimiToolsAiArenaKind.Archer;
         }
@@ -217,6 +228,11 @@ internal static class AdimiToolsAiArenaTags
         if (tags.Contains(HorseArcherTriggerRoleTag) || tags.Contains(HorseArcherSpawnRoleTag))
         {
             return AdimiToolsAiArenaKind.HorseArcher;
+        }
+
+        if (tags.Contains(HardCavalryTriggerRoleTag) || tags.Contains(CavalrySpawnRoleTag))
+        {
+            return AdimiToolsAiArenaKind.Cavalry;
         }
 
         return AdimiToolsAiArenaKind.Original;
@@ -237,6 +253,7 @@ internal static class AdimiToolsAiArenaTags
         AdimiToolsAiArenaKind.Spear => SpearGroupPrefix,
         AdimiToolsAiArenaKind.Archer => ArcherGroupPrefix,
         AdimiToolsAiArenaKind.HorseArcher => HorseArcherGroupPrefix,
+        AdimiToolsAiArenaKind.Cavalry => CavalryGroupPrefix,
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 

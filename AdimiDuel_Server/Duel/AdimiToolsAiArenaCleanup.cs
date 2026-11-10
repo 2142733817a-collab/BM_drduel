@@ -7,7 +7,7 @@ namespace AdimiDuel_Server.Duel;
 
 internal static class AdimiToolsAiArenaCleanup
 {
-    public static bool TryClear(Mission mission, VolumeBox? area)
+    public static bool TryClear(Mission mission, VolumeBox? area, bool clearUnoccupiedMounts = true)
     {
         if (area == null || !GameNetwork.IsServerOrRecorder)
         {
@@ -60,7 +60,8 @@ internal static class AdimiToolsAiArenaCleanup
                 }
 
                 Agent? rider = agent.IsMount ? agent.RiderAgent : null;
-                bool unoccupiedMount = agent.IsMount && (rider == null || !mission.AllAgents.Contains(rider) || !rider.IsActive() || rider.Health <= 0f);
+                bool unoccupiedMount = clearUnoccupiedMounts && agent.IsMount
+                    && (rider == null || !mission.AllAgents.Contains(rider) || !rider.IsActive() || rider.Health <= 0f);
                 if ((corpse || unoccupiedMount) && area.IsPointIn(agent.Position))
                 {
                     agent.FadeOut(hideInstantly: true, hideMount: false);

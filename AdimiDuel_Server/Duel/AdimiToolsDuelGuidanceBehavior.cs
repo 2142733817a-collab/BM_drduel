@@ -34,10 +34,12 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
     }
 
     private const double PollSeconds = 0.25d;
+    private const double RegionHintCooldownSeconds = 300d;
     private const string RangedTag = "Sagittarius_Tip";
     private const string CavalryTag = "Horse_Cavalry_Alert";
     private readonly Dictionary<MissionPeer, PlayerState> _players = new(ReferenceEqualityComparer.Instance);
     private readonly HashSet<MissionPeer> _spawnHintsShown = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<MissionPeer, Dictionary<AdimiToolsDuelGuidanceKind, double>> _regionHints = new(ReferenceEqualityComparer.Instance);
     private readonly List<Region> _regions = new();
     private double _nextPollAt;
     private double _lastTime;
@@ -80,6 +82,7 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
         if (now < _lastTime)
         {
             _nextPollAt = now;
+            _regionHints.Clear();
         }
 
         _lastTime = now;
@@ -146,6 +149,10 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
         }
 
         _spawnHintsShown.RemoveWhere(peer => !connected.Contains(peer));
+        foreach (MissionPeer peer in _regionHints.Keys.Where(peer => !connected.Contains(peer)).ToArray())
+        {
+            _regionHints.Remove(peer);
+        }
     }
 
     public override void OnClearScene()
@@ -282,16 +289,42 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
             try
             {
                 bool spawn = state.SpawnPending && kind == state.SpawnKind;
-                bool firstSpawnHint = spawn && !_spawnHintsShown.Contains(peer);
-                bool playSound = !soundUsed && (kind == AdimiToolsDuelGuidanceKind.Arena || firstSpawnHint);
-                string message = AdimiToolsDuelGuidanceText.Get(kind);
-                if (firstSpawnHint && AdimiToolsMissionMultiplayerDuel.PlayersDuelConfig.TryGetValue(network.VirtualPlayer.Id, out var config))
+                bool regionPending = kind switch
                 {
-                    message += "\n" + AdimiToolsDuelGuidanceText.GetCurrentMode(AdimiToolsDuelModes.GetModeName(config.FirstToLimit));
+                    AdimiToolsDuelGuidanceKind.Ranged => state.RangedPending,
+                    AdimiToolsDuelGuidanceKind.Cavalry => state.CavalryPending,
+                    AdimiToolsDuelGuidanceKind.Arena => state.ArenaPending.Count != 0,
+                    _ => false,
+                };
+                _regionHints.TryGetValue(peer, out var nextRegionHints);
+                bool showRegion = regionPending && (nextRegionHints == null
+                    || !nextRegionHints.TryGetValue(kind, out double nextAt) || now >= nextAt);
+
+                if (spawn || showRegion)
+                {
+                    bool firstSpawnHint = spawn && !_spawnHintsShown.Contains(peer);
+                    bool playSound = !soundUsed && (kind == AdimiToolsDuelGuidanceKind.Arena || firstSpawnHint);
+                    string message = AdimiToolsDuelGuidanceText.Get(kind);
+                    if (firstSpawnHint && AdimiToolsMissionMultiplayerDuel.PlayersDuelConfig.TryGetValue(network.VirtualPlayer.Id, out var config))
+                    {
+                        message += "\n" + AdimiToolsDuelGuidanceText.GetCurrentMode(AdimiToolsDuelModes.GetModeName(config.FirstToLimit));
+                    }
+
+                    AdimiToolsNotifier.ServerSendGuidanceToPlayer(network, message, playSound);
+                    soundUsed |= playSound;
                 }
 
-                AdimiToolsNotifier.ServerSendGuidanceToPlayer(network, message, playSound);
-                soundUsed |= playSound;
+                if (showRegion)
+                {
+                    if (nextRegionHints == null)
+                    {
+                        nextRegionHints = new Dictionary<AdimiToolsDuelGuidanceKind, double>();
+                        _regionHints.Add(peer, nextRegionHints);
+                    }
+
+                    nextRegionHints[kind] = now + RegionHintCooldownSeconds;
+                }
+
                 if (spawn)
                 {
                     state.SpawnPending = false;
@@ -322,6 +355,7 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
     {
         _players.Clear();
         _spawnHintsShown.Clear();
+        _regionHints.Clear();
         _regions.Clear();
         _stopped = false;
         _nextPollAt = 0d;
@@ -391,6 +425,7 @@ internal sealed class AdimiToolsDuelGuidanceBehavior : MissionLogic
         _resetPending = false;
         _players.Clear();
         _spawnHintsShown.Clear();
+        _regionHints.Clear();
         _regions.Clear();
     }
 }

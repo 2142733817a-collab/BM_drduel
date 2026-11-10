@@ -2,7 +2,7 @@
 <Module>
   <Name value="Adimi Duel Team Names" />
   <Id value="AdimiDuelTeamNames" />
-  <Version value="v1.0.0" />
+  <Version value="v1.1.0" />
   <DefaultModule value="false" />
   <ModuleCategory value="MultiplayerOptional" />
   <ModuleType value="Community" />

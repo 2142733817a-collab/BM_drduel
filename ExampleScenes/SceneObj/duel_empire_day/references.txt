@@ -1,4 +1,4 @@
-419
+420
 flora_entity flora_dry_plant_h
 flora_entity flora_dry_plant_j
 flora_entity flora_grass_a_non_shadow
@@ -23,6 +23,7 @@ mesh civilian_ladder_5m
 mesh debug_lod_mesh
 mesh deferred_lighting_sphere
 mesh editor_plane_low
+mesh editor_torus
 mesh empire_castle_wall_d_l3
 mesh empire_castle_wall_d_l3_01
 mesh empire_castle_wall_d_l3_02
