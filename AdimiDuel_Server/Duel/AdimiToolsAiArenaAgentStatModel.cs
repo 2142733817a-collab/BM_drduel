@@ -154,10 +154,11 @@ internal sealed class AdimiToolsAiArenaAgentStatModel : MultiplayerAgentStatCalc
         // keep physical animation speeds, health and damage unchanged.
         properties.AIAttackOnParryChance = System.Math.Max(properties.AIAttackOnParryChance, 0.12f);
         properties.AIAttackOnDecideChance = System.Math.Max(properties.AIAttackOnDecideChance, 0.24f);
-        if (!agent.HasMount && KickDesire > 0f)
+        if (!agent.HasMount)
         {
-            // Native chooses eligible targets and action timing. Zero keeps the stock value.
-            properties.AiKick = KickDesire;
+            // Arena infantry only counter a player's missed kick. Keep Native's
+            // independent kick desire off even when the custom feature is disabled.
+            properties.AiKick = 0f;
         }
 
         if (properties.AiShootFreq > 0f && properties.AiShootFreq < 1f)

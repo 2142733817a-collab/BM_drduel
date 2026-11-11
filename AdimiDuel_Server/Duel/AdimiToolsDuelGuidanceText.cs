@@ -22,40 +22,61 @@ internal static class AdimiToolsDuelGuidanceText
     public static string GetModeSelection(string modeName)
     {
         string highlightedMode = HighlightNumbers(FormatMode(modeName));
+        if (AdimiToolsMessageLanguage.IsEnglish)
+        {
+            return $"{Highlight("【Switch Match】")}\nSwitched to {highlightedMode}.\nAll players in 1v1 or team duels must use the same format.";
+        }
+
         return $"{Highlight("【切换对局】")}\n已切换为 {highlightedMode}。\n1v1 或多 v 多时，参战者的赛制须一致。";
     }
 
     // Team arenas own one shared series, so their notice must not imply that
     // each participant's individual duel selection is consulted.
     public static string GetTeamModeSelection(string modeName)
-        => $"{Highlight("【切换对局】")}\n此对局赛制已切换为 {HighlightNumbers(FormatMode(modeName))}。";
+        => AdimiToolsMessageLanguage.IsEnglish
+            ? $"{Highlight("【Switch Match】")}\nThis match is now {HighlightNumbers(FormatMode(modeName))}."
+            : $"{Highlight("【切换对局】")}\n此对局赛制已切换为 {HighlightNumbers(FormatMode(modeName))}。";
 
     public static string GetModeFailure(string message)
-        => $"{Highlight("【切换对局】")}\n{Escape(message)}";
+        => $"{Highlight(AdimiToolsMessageLanguage.Select("【切换对局】", "【Switch Match】"))}\n{Escape(message)}";
 
     public static string GetFriendlyFireNotice(string message)
-        => $"{Highlight("【切换队友伤害】")}\n{Escape(message)}";
+        => $"{Highlight(AdimiToolsMessageLanguage.Select("【切换队友伤害】", "【Friendly Fire】"))}\n{Escape(message)}";
 
     public static string GetAiSwitchNotice(string message)
-        => $"{Highlight("【切换 AI】")}\n{Escape(message)}";
+        => $"{Highlight(AdimiToolsMessageLanguage.Select("【切换 AI】", "【Switch AI】"))}\n{Escape(message)}";
 
     public static string GetModeMismatch(string firstName, string firstMode, string secondName, string secondMode)
-        => $"{Highlight("【赛制不一致】")}\n{Escape(firstName)}，{HighlightNumbers(FormatMode(firstMode))}。\n"
-            + $"{Escape(secondName)}，{HighlightNumbers(FormatMode(secondMode))}。\n{GetModeSwitchInstruction()}";
+        => AdimiToolsMessageLanguage.IsEnglish
+            ? $"{Highlight("【Formats Differ】")}\n{Escape(firstName)}: {HighlightNumbers(FormatMode(firstMode))}.\n"
+                + $"{Escape(secondName)}: {HighlightNumbers(FormatMode(secondMode))}.\n{GetModeSwitchInstruction()}"
+            : $"{Highlight("【赛制不一致】")}\n{Escape(firstName)}，{HighlightNumbers(FormatMode(firstMode))}。\n"
+                + $"{Escape(secondName)}，{HighlightNumbers(FormatMode(secondMode))}。\n{GetModeSwitchInstruction()}";
 
     public static string GetModeUsage()
-        => $"{Highlight("【赛制用法】")}\n{GetModeSwitchInstruction()}";
+        => $"{Highlight(AdimiToolsMessageLanguage.Select("【赛制用法】", "【Match Formats】"))}\n{GetModeSwitchInstruction()}";
 
     public static string GetCurrentMode(string modeName)
-        => $"{Highlight("【当前赛制】")}\n当前为 {HighlightNumbers(FormatMode(modeName))}。\n{GetModeSwitchInstruction()}";
+        => AdimiToolsMessageLanguage.IsEnglish
+            ? $"{Highlight("【Current Format】")}\nCurrent format: {HighlightNumbers(FormatMode(modeName))}.\n{GetModeSwitchInstruction()}"
+            : $"{Highlight("【当前赛制】")}\n当前为 {HighlightNumbers(FormatMode(modeName))}。\n{GetModeSwitchInstruction()}";
 
     public static string GetTeamCountdown(int sideACount, int sideBCount, int seconds)
-        => $"A 队 {Highlight(sideACount.ToString(System.Globalization.CultureInfo.InvariantCulture))} 人 / "
-            + $"B 队 {Highlight(sideBCount.ToString(System.Globalization.CultureInfo.InvariantCulture))} 人："
-            + $"{Highlight(seconds.ToString(System.Globalization.CultureInfo.InvariantCulture))} 秒后清场并升起屏障；进出准备区会重新计时。";
+        => AdimiToolsMessageLanguage.IsEnglish
+            ? $"Team A {Highlight(sideACount.ToString(System.Globalization.CultureInfo.InvariantCulture))} / "
+                + $"Team B {Highlight(sideBCount.ToString(System.Globalization.CultureInfo.InvariantCulture))}: "
+                + $"clearing the arena and raising barriers in {Highlight(seconds.ToString(System.Globalization.CultureInfo.InvariantCulture))}s; entering or leaving resets the timer."
+            : $"A 队 {Highlight(sideACount.ToString(System.Globalization.CultureInfo.InvariantCulture))} 人 / "
+                + $"B 队 {Highlight(sideBCount.ToString(System.Globalization.CultureInfo.InvariantCulture))} 人："
+                + $"{Highlight(seconds.ToString(System.Globalization.CultureInfo.InvariantCulture))} 秒后清场并升起屏障；进出准备区会重新计时。";
 
     public static string GetAiSpawn(int count, int difficulty, bool spearInfantry, int kind = 0)
     {
+        if (AdimiToolsMessageLanguage.IsEnglish)
+        {
+            return GetEnglishAiSpawn(count, difficulty, spearInfantry, kind);
+        }
+
         string? independentTroop = spearInfantry ? "持矛步兵"
             : kind == 2 ? (difficulty == 3 ? "困难射手" : "顶级射手")
             : kind == 3 ? "骑射手" : kind == 4 ? "困难骑兵" : null;
@@ -78,7 +99,9 @@ internal static class AdimiToolsDuelGuidanceText
     }
 
     public static string GetAiSpawnLimit(int maximum)
-        => $"{Highlight("【生成 AI】")}\n一次最多生成 {Highlight(maximum.ToString(System.Globalization.CultureInfo.InvariantCulture))} 个 AI。";
+        => AdimiToolsMessageLanguage.IsEnglish
+            ? $"{Highlight("【Summon AI】")}\nYou can summon at most {Highlight(maximum.ToString(System.Globalization.CultureInfo.InvariantCulture))} AI at once."
+            : $"{Highlight("【生成 AI】")}\n一次最多生成 {Highlight(maximum.ToString(System.Globalization.CultureInfo.InvariantCulture))} 个 AI。";
 
     internal static string Highlight(string text)
         => $"<span style=\"{HighlightStyle}\">{Escape(text)}</span>";
@@ -91,17 +114,53 @@ internal static class AdimiToolsDuelGuidanceText
             number => $"<span style=\"{HighlightStyle}\">{number.Value}</span>");
 
     private static string GetModeSwitchInstruction()
-        => "挥砍木桶，或输入 !1、!3.2、!5.3 切换。";
+        => AdimiToolsMessageLanguage.Select("挥砍木桶，或输入 !1、!3.2、!5.3 切换。",
+            "Hit the barrel or type !1, !3.2 or !5.3.");
+
+    private static string GetEnglishAiSpawn(int count, int difficulty, bool spearInfantry, int kind)
+    {
+        bool single = count == 1;
+        string? independentTroop = spearInfantry ? (single ? "spearman" : "spearmen")
+            : kind == 2 ? (difficulty == 3
+                ? (single ? "hard archer" : "hard archers")
+                : (single ? "elite archer" : "elite archers"))
+            : kind == 3 ? (single ? "horse archer" : "horse archers")
+            : kind == 4 ? (single ? "hard cavalry rider" : "hard cavalry riders") : null;
+        string troop = independentTroop ?? difficulty switch
+        {
+            2 => "normal AI",
+            3 => "hard AI",
+            _ => "easy AI",
+        };
+        string details = independentTroop != null
+            ? $"All AI use the same randomly chosen faction.{(difficulty == 3 ? (kind == 2 ? "\nDouble health." : "\nSkill 330; double health.") : string.Empty)}"
+            : difficulty switch
+            {
+                2 => "Same troop and equipment as you.\nSkill +50; double health.",
+                3 => "Same random faction from six; greatsword infantry.\nSkill 330; double health and improved armor.",
+                _ => "Same troop and equipment as you.",
+            };
+        string verb = single ? "spawns" : "spawn";
+        return $"{Highlight("【Summon AI】")}\n3 seconds until {Highlight(count.ToString(System.Globalization.CultureInfo.InvariantCulture))} {troop} {verb}.\n{details}\n"
+            + $"{Highlight("Strike again to add AI (max 10)")}.";
+    }
 
     private static string FormatMode(string modeName) => modeName switch
     {
+        // Compatibility for callers holding an older Chinese display label.
+        // Actual match selection always uses its numeric limit, never text.
+        "1局定胜负" when AdimiToolsMessageLanguage.IsEnglish => AdimiToolsDuelModes.GetModeName(1),
+        "3局2胜" when AdimiToolsMessageLanguage.IsEnglish => AdimiToolsDuelModes.GetModeName(2),
+        "5局3胜" when AdimiToolsMessageLanguage.IsEnglish => AdimiToolsDuelModes.GetModeName(3),
         "1局定胜负" => "1 局定胜负",
         "3局2胜" => "3 局 2 胜",
         "5局3胜" => "5 局 3 胜",
         _ => modeName,
     };
 
-    private static string GetContent(AdimiToolsDuelGuidanceKind kind) => kind switch
+    private static string GetContent(AdimiToolsDuelGuidanceKind kind) => AdimiToolsMessageLanguage.IsEnglish
+        ? GetEnglishContent(kind)
+        : kind switch
     {
         AdimiToolsDuelGuidanceKind.Ranged => "【射手区·北方】\n穿过隧道可选取远程武器。\n"
             + "也可经观众席传送门直达射手场地。\n"
@@ -117,5 +176,25 @@ internal static class AdimiToolsDuelGuidanceText
             + "多人场地默认1局定胜负，砍场内木桶可切换本场赛制。",
         _ => $"【步兵区·中心】\n挥砍{Highlight("盾牌堆")}可切换阵营。\n"
             + "对局规则可前往任意场地查看。",
+    };
+
+    private static string GetEnglishContent(AdimiToolsDuelGuidanceKind kind) => kind switch
+    {
+        AdimiToolsDuelGuidanceKind.Ranged => "【Archer Area · North】\nGo through the tunnel for ranged weapons.\n"
+            + "Or use the spectator portal to reach the archery range.\n"
+            + "Strike the matching statue to summon AI; each hit adds one.\n"
+            + "Go to the central infantry area and strike the shield pile to switch factions.\n"
+            + "This area is still under construction.",
+        AdimiToolsDuelGuidanceKind.Cavalry => "【Cavalry Area · South】\nGo through the gate to the open cavalry area.\n"
+            + "Strike the matching statue to summon AI; each hit adds one.\n"
+            + "Go to the central infantry area and strike the shield pile to switch factions.",
+        AdimiToolsDuelGuidanceKind.Arena => "【Arena Rules】Strike a statue to summon AI:\n"
+            + "Hits set the count (max 10); color sets difficulty.\n"
+            + "【Team Battle】\nBoth teams enter their glowing A/B ready areas.\n"
+            + "At least 1 player per team; teams may differ in size.\n"
+            + "【Match Format】\nStrike the barrel to select 1 round, best of 3 or best of 5.\n"
+            + "Team battles default to 1 round; use the arena barrel to change it.",
+        _ => $"【Infantry · Center】\nStrike the {Highlight("shield pile")} to switch factions.\n"
+            + "Visit any arena for match rules.",
     };
 }

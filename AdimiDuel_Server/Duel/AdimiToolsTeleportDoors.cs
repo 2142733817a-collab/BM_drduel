@@ -33,7 +33,7 @@ internal class AdimiToolsTeleportDoors : UsableMissionObject
         _targetPoint = targetPoint;
     }
 
-    public override TextObject GetDescriptionText(WeakGameEntity gameEntity)
+    public override TextObject GetDescriptionText(WeakGameEntity gameEntity, Agent agent)
     {
         return new TextObject("Teleport");
     }

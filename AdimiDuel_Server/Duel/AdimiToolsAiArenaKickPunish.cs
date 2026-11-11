@@ -12,13 +12,25 @@ namespace AdimiDuel_Server.Duel;
 // assertion that an attack could not have touched terrain or another object.
 internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
 {
-    internal const double ConfirmationSeconds = 0.08d;
+    internal enum OwnKickContactResult
+    {
+        None,
+        ContactOnly,
+        FollowAttack,
+    }
+
+    internal const double ConfirmationSeconds = 0.12d;
     internal const double EarlyContactToleranceSeconds = 0.20d;
     internal const double CounterOpportunitySeconds = 1.6d;
-    internal const double KickContactSeconds = 0.8d;
-    internal const double FollowOpportunitySeconds = 0.6d;
+    internal const double KickContactSeconds = 1.6d;
+    internal const double OwnMissConfirmationSeconds = 0.08d;
+    internal const double GuardAfterMissSeconds = 0.8d;
+    // Contact can precede the end of the kick animation. Keep the opportunity
+    // long enough to request the attack once Native can transition out of it.
+    internal const double FollowOpportunitySeconds = 1.4d;
     private const long SnapshotMilliseconds = 100;
-    private const long AttackMilliseconds = 200;
+    internal const long AttackRequestMilliseconds = 80;
+    internal const long AttackGapMilliseconds = 30;
     private const int MaximumRecentContacts = 64;
     private const Agent.MovementControlFlag DefenseOrAction = Agent.MovementControlFlag.DefendMask
         | Agent.MovementControlFlag.DefendBlock | Agent.MovementControlFlag.Action;
@@ -30,30 +42,48 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         ConfirmMiss,
         CounterKick,
         AwaitKickContact,
+        GuardAfterMiss,
         FollowAttack,
     }
 
     private readonly object _gate = new();
+    private readonly Func<long> _clock;
     private readonly Dictionary<int, double> _recentEnemyContacts = new();
     private Phase _phase;
     private int _targetIndex = -1;
     private bool _enemyKickObserved;
     private bool _enemyKickContacted;
     private double _enemyKickStartedAt;
+    private bool _enemyKickEnded;
+    private double _enemyKickEndedAt;
     private double _lastObservedAt;
     private bool _hasObservation;
     private double _phaseStartedAt;
     private double _phaseExpiresAt;
     private long _phaseClockExpiresAt;
     private long _snapshotExpiresAt;
-    private long _attackClockExpiresAt;
+    private long _trackingSnapshotExpiresAt;
+    private long _attackPulseStartedAt;
+    private double _ownKickSentAt;
+    private double _ownKickExpiresAt;
+    private long _ownKickClockExpiresAt;
+    private bool _ownKickObserved;
+    private double _ownKickEndedAt;
+    private bool _ownKickEnded;
+    private int _counterSourceIndex = -1;
     private bool _armed;
     private bool _attackStarted;
     private Agent.MovementControlFlag _attack;
 
     public AdimiToolsAiArenaKickPunish(Agent agent)
+        : this(agent, Stopwatch.GetTimestamp)
+    {
+    }
+
+    internal AdimiToolsAiArenaKickPunish(Agent agent, Func<long> clock)
         : base(agent)
     {
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
     // eligible must include living hostile participants in the same running
@@ -62,7 +92,8 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     // a hit: only NotifyOwnKickContact can open the follow-up attack window.
     public void Observe(double now, int targetIndex, bool eligible, bool enemyKicking, bool ownKicking,
         bool ownAttack, bool hardStun, bool otherThreat, int difficulty, double roll,
-        Agent.MovementControlFlag allowed, Agent.MovementControlFlag preferred)
+        Agent.MovementControlFlag allowed, Agent.MovementControlFlag preferred, bool cancelableOwnReady = false,
+        bool confirmedMissRecovery = false)
     {
         lock (_gate)
         {
@@ -73,7 +104,7 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 return;
             }
 
-            long clock = Stopwatch.GetTimestamp();
+            long clock = _clock();
             if (_targetIndex != targetIndex)
             {
                 ResetKickTrackingLocked();
@@ -90,23 +121,31 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             {
                 if (!_enemyKickObserved)
                 {
-                    // A new opposing kick preempts any previous opportunity.
+                    // Action channels can briefly leave and resume the same
+                    // kick. Keep that kick's contact history across the gap.
+                    bool resumed = _enemyKickEnded && now <= _enemyKickEndedAt + ConfirmationSeconds;
                     ClearPhaseLocked();
                     _enemyKickObserved = true;
-                    _enemyKickStartedAt = now;
-                    _enemyKickContacted = _recentEnemyContacts.TryGetValue(targetIndex, out double contact)
-                        && contact >= now - EarlyContactToleranceSeconds && contact <= now;
+                    _enemyKickEnded = false;
+                    if (!resumed)
+                    {
+                        _enemyKickStartedAt = now;
+                        _enemyKickContacted = _recentEnemyContacts.TryGetValue(targetIndex, out double contact)
+                            && contact >= now - EarlyContactToleranceSeconds && contact <= now;
+                    }
                 }
             }
             else if (_enemyKickObserved)
             {
                 _enemyKickObserved = false;
+                _enemyKickEnded = true;
+                _enemyKickEndedAt = now;
                 if (!_enemyKickContacted)
                 {
                     _phase = Phase.ConfirmMiss;
                     _phaseStartedAt = now;
                     _phaseExpiresAt = now + ConfirmationSeconds + CounterOpportunitySeconds;
-                    _phaseClockExpiresAt = AddMilliseconds(clock, 1680);
+                    _phaseClockExpiresAt = AddMilliseconds(clock, 1720);
                 }
                 else
                 {
@@ -114,13 +153,22 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 }
             }
 
-            if (_phase == Phase.ConfirmMiss && now >= _phaseStartedAt + ConfirmationSeconds)
+            // While an observed kick is still in progress, a separate short
+            // snapshot may permit positioning. This never confirms a miss or
+            // grants a kick; the mission thread must still check geometry,
+            // obstacles and all other threats before publishing movement.
+            _trackingSnapshotExpiresAt = enemyKicking && _enemyKickObserved && !_enemyKickContacted
+                && !hardStun && !ownKicking && (!ownAttack || cancelableOwnReady)
+                ? AddMilliseconds(clock, SnapshotMilliseconds) : 0;
+
+            if (_phase == Phase.ConfirmMiss && !enemyKicking && !_enemyKickContacted
+                && (confirmedMissRecovery || now >= _phaseStartedAt + ConfirmationSeconds)
+                && !hardStun && !otherThreat)
             {
                 // Take exactly one sample per observed missed kick. Invalid
-                // samples and any immediate danger fail closed.
-                double chance = difficulty switch { 2 => 0.7d, 3 => 1d, _ => 0.4d };
-                if (!double.IsFinite(roll) || roll < 0d || roll >= 1d || roll >= chance
-                    || hardStun || otherThreat)
+                // samples fail closed; a threat temporarily holds the window.
+                double chance = difficulty switch { 2 => 0.95d, 3 => 1d, _ => 0.8d };
+                if (!double.IsFinite(roll) || roll < 0d || roll >= 1d || roll >= chance)
                 {
                     ClearPhaseLocked();
                 }
@@ -128,20 +176,20 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                 {
                     _phase = Phase.CounterKick;
                     _phaseStartedAt = now;
-                    _phaseExpiresAt = now + CounterOpportunitySeconds;
-                    _phaseClockExpiresAt = AddMilliseconds(clock, 1600);
                 }
             }
 
-            if (_phase is Phase.CounterKick or Phase.AwaitKickContact or Phase.FollowAttack)
+            if (_phase is Phase.CounterKick or Phase.AwaitKickContact or Phase.GuardAfterMiss or Phase.FollowAttack)
             {
-                if (hardStun || otherThreat)
+                // An incoming attack must still cancel our offensive input,
+                // but not the observation needed to defend after a missed kick.
+                if (hardStun || (otherThreat && (_phase is Phase.CounterKick or Phase.FollowAttack)))
                 {
                     ClearPhaseLocked();
                     return;
                 }
 
-                if (_phase == Phase.CounterKick && (ownAttack || ownKicking))
+                if (_phase == Phase.CounterKick && ((ownAttack && !cancelableOwnReady) || ownKicking))
                 {
                     // The player has already missed. A Native attack/kick
                     // that is still finishing should not erase the entire
@@ -153,7 +201,7 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
                     return;
                 }
 
-                if (ownAttack)
+                if (_phase == Phase.FollowAttack && ownAttack)
                 {
                     // If Native is already attacking there is no need to
                     // interrupt it with another kick or attack selection.
@@ -163,6 +211,56 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             }
 
             _armed = false;
+            if (_phase == Phase.ConfirmMiss)
+            {
+                // This only permits a tentative approach; it never permits a
+                // kick. Unsafe or stale samples revoke it immediately.
+                _snapshotExpiresAt = !hardStun && !otherThreat && !ownKicking
+                    && (!ownAttack || cancelableOwnReady)
+                    ? AddMilliseconds(clock, SnapshotMilliseconds) : 0;
+            }
+            if (_phase == Phase.AwaitKickContact)
+            {
+                if (ownKicking)
+                {
+                    _ownKickObserved = true;
+                    _ownKickEnded = false;
+                }
+                else if (_ownKickObserved)
+                {
+                    if (!_ownKickEnded)
+                    {
+                        _ownKickEnded = true;
+                        _ownKickEndedAt = now;
+                    }
+                    else if (now >= _ownKickEndedAt + OwnMissConfirmationSeconds)
+                    {
+                        _phase = Phase.GuardAfterMiss;
+                        _phaseStartedAt = now;
+                        _phaseExpiresAt = now + GuardAfterMissSeconds;
+                        _phaseClockExpiresAt = AddMilliseconds(clock, (long)(GuardAfterMissSeconds * 1000d));
+                    }
+                }
+
+                // Lets the caller cache an incoming attack while the kick is
+                // underway without publishing a defense before it ends.
+                _snapshotExpiresAt = AddMilliseconds(clock, SnapshotMilliseconds);
+            }
+            else if (_phase == Phase.GuardAfterMiss)
+            {
+                if (ownKicking)
+                {
+                    // A short gap between kick animation phases is not an end.
+                    _phase = Phase.AwaitKickContact;
+                    _phaseStartedAt = _ownKickSentAt;
+                    _phaseExpiresAt = _ownKickExpiresAt;
+                    _phaseClockExpiresAt = _ownKickClockExpiresAt;
+                    _ownKickEnded = false;
+                }
+
+                _snapshotExpiresAt = AddMilliseconds(clock, SnapshotMilliseconds);
+            }
+
             if (_phase == Phase.CounterKick)
             {
                 _snapshotExpiresAt = AddMilliseconds(clock, SnapshotMilliseconds);
@@ -211,12 +309,20 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
 
             TrimRecentContactsLocked();
 
-            if (attackerIndex != _targetIndex)
+            bool originalCounterSource = attackerIndex == _counterSourceIndex
+                && _phase is Phase.AwaitKickContact or Phase.GuardAfterMiss or Phase.FollowAttack;
+            if (attackerIndex != _targetIndex && !originalCounterSource)
             {
                 return;
             }
 
-            if (_enemyKickObserved && now >= _enemyKickStartedAt - EarlyContactToleranceSeconds)
+            if (attackerIndex == _targetIndex)
+            {
+                _trackingSnapshotExpiresAt = 0;
+            }
+
+            if ((_enemyKickObserved || _enemyKickEnded && now <= _enemyKickEndedAt + ConfirmationSeconds)
+                && now >= _enemyKickStartedAt - EarlyContactToleranceSeconds)
             {
                 _enemyKickContacted = true;
             }
@@ -228,11 +334,49 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         }
     }
 
+    // An unconfirmed miss is only an opportunity to close distance. This is
+    // never permission to kick; a fresh safe observation is always required.
+    public bool WantsCounterApproach(int targetIndex)
+    {
+        lock (_gate)
+        {
+            long clock = _clock();
+            return _phase == Phase.ConfirmMiss && _targetIndex == targetIndex
+                && _enemyKickEnded && !_enemyKickContacted
+                && clock < _phaseClockExpiresAt && clock < _snapshotExpiresAt;
+        }
+    }
+
+    // Fresh authorization to prepare position while the assigned opponent's
+    // kick is still underway. Caller must check KickHit, threats, geometry and
+    // path safety; this is deliberately separate from counter-kick permission.
+    public bool WantsTrackActiveKick(int targetIndex)
+    {
+        lock (_gate)
+        {
+            long clock = _clock();
+            return _targetIndex == targetIndex && _enemyKickObserved && !_enemyKickContacted
+                && _trackingSnapshotExpiresAt != 0 && clock < _trackingSnapshotExpiresAt;
+        }
+    }
+
+    // Only for withdrawing a previously published movement snapshot on a
+    // collision. The positioning snapshot can expire just before a newer
+    // footwork snapshot, so this observation deliberately has no TTL and
+    // must never be used to authorize movement or attacks.
+    public bool HasObservedActiveKick(int targetIndex)
+    {
+        lock (_gate)
+        {
+            return _targetIndex == targetIndex && _enemyKickObserved && !_enemyKickContacted;
+        }
+    }
+
     public bool WantsCounterKick(int targetIndex)
     {
         lock (_gate)
         {
-            long clock = Stopwatch.GetTimestamp();
+            long clock = _clock();
             if (_phase != Phase.CounterKick || _targetIndex != targetIndex)
             {
                 return false;
@@ -253,7 +397,7 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     {
         lock (_gate)
         {
-            long clock = Stopwatch.GetTimestamp();
+            long clock = _clock();
             if (!double.IsFinite(now) || _phase != Phase.CounterKick || targetIndex != _targetIndex
                 || now < _phaseStartedAt || now >= _phaseExpiresAt
                 || clock >= _phaseClockExpiresAt || clock >= _snapshotExpiresAt)
@@ -264,7 +408,14 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
             _phase = Phase.AwaitKickContact;
             _phaseStartedAt = now;
             _phaseExpiresAt = now + KickContactSeconds;
-            _phaseClockExpiresAt = AddMilliseconds(clock, 800);
+            _phaseClockExpiresAt = AddMilliseconds(clock, (long)(KickContactSeconds * 1000d));
+            _ownKickSentAt = now;
+            _counterSourceIndex = _targetIndex;
+            _ownKickExpiresAt = _phaseExpiresAt;
+            _ownKickClockExpiresAt = _phaseClockExpiresAt;
+            _ownKickObserved = false;
+            _ownKickEnded = false;
+            _ownKickEndedAt = 0d;
             _snapshotExpiresAt = 0;
             _armed = false;
         }
@@ -276,23 +427,97 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     {
         lock (_gate)
         {
-            long clock = Stopwatch.GetTimestamp();
-            if (!double.IsFinite(now) || _phase != Phase.AwaitKickContact || targetIndex != _targetIndex
-                || now < _phaseStartedAt || now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt)
+            // Preserve the existing contract for callers that only confirm
+            // contact with the originally selected target.
+            if (targetIndex != _targetIndex)
             {
                 return false;
             }
 
-            _phase = Phase.FollowAttack;
-            _phaseStartedAt = now;
-            _phaseExpiresAt = now + FollowOpportunitySeconds;
-            _phaseClockExpiresAt = AddMilliseconds(clock, 600);
-            _snapshotExpiresAt = 0;
-            _attackClockExpiresAt = 0;
-            _armed = false;
-            _attackStarted = false;
-            _attack = Agent.MovementControlFlag.None;
-            return true;
+            return NotifyOwnKickCollisionLocked(now, targetIndex, canFollow: true, out _) == OwnKickContactResult.FollowAttack;
+        }
+    }
+
+    // The caller must establish that this is a real collision with a person.
+    // It alone decides whether the victim is an unblocked, living hostile
+    // player in the same arena; callbacks here never read Native agent state.
+    // Even an ineligible or blocked person is contact, not a missed kick.
+    public OwnKickContactResult NotifyOwnKickCollision(double now, int victimIndex, bool canFollow, out int originalTargetIndex)
+    {
+        lock (_gate)
+        {
+            return NotifyOwnKickCollisionLocked(now, victimIndex, canFollow, out originalTargetIndex);
+        }
+    }
+
+    // Used on the mission thread before ordinary targeting can clear a new
+    // follow-up aimed at a different, confirmed victim.
+    public int GetPendingFollowTargetIndex(double now)
+    {
+        lock (_gate)
+        {
+            if (_phase != Phase.FollowAttack)
+            {
+                return -1;
+            }
+
+            long clock = _clock();
+            if (!double.IsFinite(now) || now < _phaseStartedAt || now >= _phaseExpiresAt
+                || clock >= _phaseClockExpiresAt)
+            {
+                ClearPhaseLocked();
+                return -1;
+            }
+
+            return _targetIndex;
+        }
+    }
+
+    // A sent counter-kick remains tied to its original opponent until its
+    // hit/miss is resolved. This lets the mission thread keep ordinary target
+    // redistribution from erasing a valid in-flight kick observation.
+    public int GetPendingKickTargetIndex(double now)
+    {
+        lock (_gate)
+        {
+            if (_phase != Phase.AwaitKickContact)
+            {
+                return -1;
+            }
+
+            long clock = _clock();
+            if (!double.IsFinite(now) || now < _ownKickSentAt || now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt)
+            {
+                ClearPhaseLocked();
+                return -1;
+            }
+
+            return _counterSourceIndex;
+        }
+    }
+
+    // Read-only opportunity for main-thread threat observation. A separate
+    // WantsGuardAfterMiss check is required before publishing defense input.
+    public bool CanObserveGuardAfterKick(int targetIndex)
+    {
+        lock (_gate)
+        {
+            long clock = _clock();
+            return _targetIndex == targetIndex && _ownKickObserved
+                && (_phase is Phase.AwaitKickContact or Phase.GuardAfterMiss)
+                && clock < _phaseClockExpiresAt && clock < _snapshotExpiresAt;
+        }
+    }
+
+    // This is deliberately not part of HasPendingOrControl: a guard window must
+    // not extend the multiplayer kick assignment or authorize another kick.
+    public bool WantsGuardAfterMiss(int targetIndex)
+    {
+        lock (_gate)
+        {
+            long clock = _clock();
+            return _phase == Phase.GuardAfterMiss && _targetIndex == targetIndex
+                && clock < _phaseClockExpiresAt && clock < _snapshotExpiresAt;
         }
     }
 
@@ -302,14 +527,13 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         {
             lock (_gate)
             {
-                long clock = Stopwatch.GetTimestamp();
-                if ((_phaseClockExpiresAt > 0 && clock >= _phaseClockExpiresAt)
-                    || (_attackStarted && clock >= _attackClockExpiresAt))
+                long clock = _clock();
+                if (_phaseClockExpiresAt > 0 && clock >= _phaseClockExpiresAt)
                 {
                     ClearPhaseLocked();
                 }
 
-                return _phase is Phase.CounterKick or Phase.AwaitKickContact or Phase.FollowAttack;
+                return _phase is Phase.ConfirmMiss or Phase.CounterKick or Phase.AwaitKickContact or Phase.FollowAttack;
             }
         }
     }
@@ -327,13 +551,13 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
     {
         lock (_gate)
         {
-            long clock = Stopwatch.GetTimestamp();
+            long clock = _clock();
             if (_phase != Phase.FollowAttack)
             {
                 return;
             }
 
-            if (clock >= _phaseClockExpiresAt || (_attackStarted && clock >= _attackClockExpiresAt))
+            if (clock >= _phaseClockExpiresAt)
             {
                 ClearPhaseLocked();
                 return;
@@ -355,24 +579,59 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
 
             if ((movementFlag & Agent.MovementControlFlag.AttackMask) != 0)
             {
-                ClearPhaseLocked();
+                // Preserve Native's one existing direction. Its input flag is
+                // not proof that Native accepted or began the attack.
                 return;
             }
 
             if (!_attackStarted)
             {
                 _attackStarted = true;
-                _attackClockExpiresAt = AddMilliseconds(clock, AttackMilliseconds);
+                _attackPulseStartedAt = clock;
             }
 
-            movementFlag |= _attack;
+            long period = AddMilliseconds(0, AttackRequestMilliseconds + AttackGapMilliseconds);
+            long onDuration = AddMilliseconds(0, AttackRequestMilliseconds);
+            if (clock >= _attackPulseStartedAt && (clock - _attackPulseStartedAt) % period < onDuration)
+            {
+                movementFlag |= _attack;
+            }
         }
+    }
+
+    private OwnKickContactResult NotifyOwnKickCollisionLocked(double now, int victimIndex, bool canFollow, out int originalTargetIndex)
+    {
+        originalTargetIndex = -1;
+        long clock = _clock();
+        if (!double.IsFinite(now) || victimIndex < 0 || _phase is not (Phase.AwaitKickContact or Phase.GuardAfterMiss)
+            || now < _ownKickSentAt || now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt)
+        {
+            return OwnKickContactResult.None;
+        }
+
+        originalTargetIndex = _counterSourceIndex;
+        if (!canFollow)
+        {
+            ClearPhaseLocked();
+            return OwnKickContactResult.ContactOnly;
+        }
+
+        _targetIndex = victimIndex;
+        _phase = Phase.FollowAttack;
+        _phaseStartedAt = now;
+        _phaseExpiresAt = now + FollowOpportunitySeconds;
+        _phaseClockExpiresAt = AddMilliseconds(clock, (long)(FollowOpportunitySeconds * 1000d));
+        _snapshotExpiresAt = 0;
+        _attackPulseStartedAt = 0;
+        _armed = false;
+        _attackStarted = false;
+        _attack = Agent.MovementControlFlag.None;
+        return OwnKickContactResult.FollowAttack;
     }
 
     private void ExpirePhaseLocked(double now, long clock)
     {
-        if (_phase != Phase.None && (now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt
-            || (_attackStarted && clock >= _attackClockExpiresAt)))
+        if (_phase != Phase.None && (now >= _phaseExpiresAt || clock >= _phaseClockExpiresAt))
         {
             ClearPhaseLocked();
         }
@@ -447,6 +706,9 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         _enemyKickObserved = false;
         _enemyKickContacted = false;
         _enemyKickStartedAt = 0d;
+        _enemyKickEnded = false;
+        _enemyKickEndedAt = 0d;
+        _trackingSnapshotExpiresAt = 0;
     }
 
     private void ClearPhaseLocked()
@@ -456,10 +718,17 @@ internal sealed class AdimiToolsAiArenaKickPunish : AgentComponent
         _phaseExpiresAt = 0d;
         _phaseClockExpiresAt = 0;
         _snapshotExpiresAt = 0;
-        _attackClockExpiresAt = 0;
+        _attackPulseStartedAt = 0;
         _armed = false;
         _attackStarted = false;
         _attack = Agent.MovementControlFlag.None;
+        _ownKickSentAt = 0d;
+        _ownKickExpiresAt = 0d;
+        _ownKickClockExpiresAt = 0;
+        _ownKickObserved = false;
+        _ownKickEndedAt = 0d;
+        _ownKickEnded = false;
+        _counterSourceIndex = -1;
     }
 
     private void ClearLocked()

@@ -265,19 +265,25 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 {
                     if (arena.Members.Values.Any(member => !IsLiveMember(arena, member) || !arena.Area.IsPointIn(Ground(member.Agent))))
                     {
-                        End(arena, "有队员在开局准备时离开或状态变化，本场已取消。", now, immediately: true);
+                        End(arena, AdimiToolsMessageLanguage.Select("有队员在开局准备时离开或状态变化，本场已取消。",
+                            "The match was canceled because a player left or became unavailable during preparation."), now, immediately: true);
                     }
                     else if (!ClearBystanders(arena))
                     {
-                        End(arena, "场地被其他对局占用或缺少区域外出生点，本场已取消。", now, immediately: true);
+                        End(arena, AdimiToolsMessageLanguage.Select("场地被其他对局占用或缺少区域外出生点，本场已取消。",
+                            "The match was canceled: the arena is occupied or an outside spawn point is missing."), now, immediately: true);
                     }
                     else if (BoundaryAtTarget(arena, raised: true))
                     {
                         arena.Readiness.Start();
                         SetEnemies(arena, true);
                         BeginLearningRound(arena);
-                        string tk = arena.FriendlyFireEnabled ? "\n本场允许队友伤害。" : string.Empty;
-                        Announce(arena, $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。{tk}");
+                        string tk = arena.FriendlyFireEnabled
+                            ? AdimiToolsMessageLanguage.Select("\n本场允许队友伤害。", "\nFriendly fire is enabled.") : string.Empty;
+                        string startNotice = AdimiToolsMessageLanguage.IsEnglish
+                            ? $"Team battle begins: Team A {arena.Members.Values.Count(m => m.SideA)}, Team B {arena.Members.Values.Count(m => !m.SideA)}; {AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}.{tk}"
+                            : $"组队对战开始：A 队 {arena.Members.Values.Count(m => m.SideA)} 人，B 队 {arena.Members.Values.Count(m => !m.SideA)} 人；{AdimiToolsDuelModes.GetModeName(arena.Series!.TargetWins)}。{tk}";
+                        Announce(arena, startNotice);
                     }
                 }
                 else if (!arena.Disabled)
@@ -429,7 +435,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         arena.NextFriendlyFireToggleAt = Mission.CurrentTime + 0.5d;
         if (!inCombat && arena.Readiness.Phase >= AdimiToolsTeamBattlePhase.Preparing)
         {
-            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("本场名单已锁定，无法切换队友伤害。"), ordinaryChat: true);
+            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(AdimiToolsMessageLanguage.Select(
+                "本场名单已锁定，无法切换队友伤害。", "Friendly fire cannot be changed after the roster is locked.")), ordinaryChat: true);
             return;
         }
 
@@ -442,13 +449,16 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             {
                 SetTeamSelfHostility(arena.TeamA!, arena.TeamB!, arena.FriendlyFireEnabled, failures);
                 AdimiToolsConsoleLog.Log($"Team TK switch failed: {new AggregateException(failures).Message}");
-                Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("队友 TK 切换失败。"), ordinaryChat: true);
+                Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(AdimiToolsMessageLanguage.Select(
+                    "队友 TK 切换失败。", "Could not change friendly fire.")), ordinaryChat: true);
                 return;
             }
         }
 
         arena.FriendlyFireEnabled = enabled;
-        string notice = AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。");
+        string notice = AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(enabled
+            ? AdimiToolsMessageLanguage.Select("此对局队友 TK 已开启。", "Friendly fire is enabled for this match.")
+            : AdimiToolsMessageLanguage.Select("此对局队友 TK 已关闭。", "Friendly fire is disabled for this match."));
         foreach (MissionPeer recipient in GetSelectorRecipients(arena, peer, inCombat))
         {
             Notify(recipient, notice, ordinaryChat: true);
@@ -827,7 +837,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         {
             AdimiToolsTeamBattlePhase.CountingDown => AdimiToolsDuelGuidanceText.GetTeamCountdown(
                 a.Count, b.Count, Math.Max(0, (int)Math.Ceiling(arena.Readiness.CountdownEndsAt!.Value - now))),
-            _ => "等待双方进入准备区，每队至少 1 人，人数无需相等。",
+            _ => AdimiToolsMessageLanguage.Select("等待双方进入准备区，每队至少 1 人，人数无需相等。",
+                "Waiting for both teams. Each needs at least 1 player; team sizes may differ."),
         };
         if (notice != arena.LastNotice || countdownRestarted)
         {
@@ -875,11 +886,15 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         }
 
         arena.Series = new AdimiToolsTeamBattleSeries(arena.TargetWins);
-        Announce(arena, $"名单已锁定，本场赛制为{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}。");
+        string rosterMessage = AdimiToolsMessageLanguage.IsEnglish
+            ? $"Roster locked. Match format: {AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}."
+            : $"名单已锁定，本场赛制为{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}。";
+        Announce(arena, rosterMessage);
 
         if (!ClearBystanders(arena) || !AdimiToolsAiArenaCleanup.TryClear(Mission, arena.Area))
         {
-            End(arena, "场地尚未清理完毕或存在其他对局，本场已取消。", now, immediately: true);
+            End(arena, AdimiToolsMessageLanguage.Select("场地尚未清理完毕或存在其他对局，本场已取消。",
+                "The match was canceled because the arena is not clear or is occupied."), now, immediately: true);
             return;
         }
 
@@ -916,7 +931,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             }
         }
 
-        Announce(arena, "名单已锁定，场地清理完成，屏障正在升起；屏障就位后开战。");
+        Announce(arena, AdimiToolsMessageLanguage.Select("名单已锁定，场地清理完成，屏障正在升起；屏障就位后开战。",
+            "Roster locked and arena cleared. The battle begins when the barriers are raised."));
     }
 
     private void TickRunning(Arena arena, double now)
@@ -967,7 +983,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         bool complete = arena.Series.RecordRound(sideAWon);
         if (complete)
         {
-            End(arena, $"组队对战结束：{(arena.Series.WinnerSideA == true ? "A" : "B")} 队获胜，比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。", now, normalCompletion: true);
+            string endMessage = AdimiToolsMessageLanguage.IsEnglish
+                ? $"Team battle ended: Team {(arena.Series.WinnerSideA == true ? "A" : "B")} wins. Score A:B {arena.Series.SideAWins}:{arena.Series.SideBWins} ({AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)})."
+                : $"组队对战结束：{(arena.Series.WinnerSideA == true ? "A" : "B")} 队获胜，比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。";
+            End(arena, endMessage, now, normalCompletion: true);
             return;
         }
 
@@ -986,8 +1005,13 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         arena.RoundAreaClean = AdimiToolsAiArenaCleanup.TryClear(Mission, arena.Area);
         arena.NextRoundCleanupAt = now + 0.25d;
-        string result = !sideAWon.HasValue ? "本局双方同时全灭，平局不加分，重新对战。" : $"本局 {(sideAWon.Value ? "A" : "B")} 队获胜。";
-        Announce(arena, $"{result}当前比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}），阵亡者复活后准备 3 秒开始下一局。");
+        string result = !sideAWon.HasValue
+            ? AdimiToolsMessageLanguage.Select("本局双方同时全灭，平局不加分，重新对战。", "Both teams were eliminated. The round is replayed without a point. ")
+            : AdimiToolsMessageLanguage.IsEnglish ? $"Team {(sideAWon.Value ? "A" : "B")} wins the round. " : $"本局 {(sideAWon.Value ? "A" : "B")} 队获胜。";
+        string scoreMessage = AdimiToolsMessageLanguage.IsEnglish
+            ? $"{result}Score: {arena.Series.SideAWins}:{arena.Series.SideBWins} ({AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}). The next round starts 3 seconds after respawns are ready."
+            : $"{result}当前比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}），阵亡者复活后准备 3 秒开始下一局。";
+        Announce(arena, scoreMessage);
         TickRoundWaiting(arena, now);
     }
 
@@ -1001,7 +1025,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         if (!ClearBystanders(arena))
         {
-            End(arena, "局间场地被其他对局占用或无法清场，本场已取消。", now, immediately: true);
+            End(arena, AdimiToolsMessageLanguage.Select("局间场地被其他对局占用或无法清场，本场已取消。",
+                "The match was canceled because the arena became occupied or could not be cleared."), now, immediately: true);
             return;
         }
 
@@ -1031,7 +1056,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             arena.NextRoundAt = null;
             if (now >= arena.RespawnDeadline)
             {
-                End(arena, "等待组队队员复活、装备恢复或区域清理超时，本场已取消。", now, immediately: true);
+                End(arena, AdimiToolsMessageLanguage.Select("等待组队队员复活、装备恢复或区域清理超时，本场已取消。",
+                    "The match was canceled: waiting for respawns, equipment, or arena cleanup timed out."), now, immediately: true);
             }
 
             return;
@@ -1040,7 +1066,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         if (!arena.NextRoundAt.HasValue)
         {
             arena.NextRoundAt = now + 3d;
-            Announce(arena, $"当前比分 {arena.Series!.SideAWins}:{arena.Series.SideBWins}，双方准备完成，下一局 3 秒后开始。", playSound: true);
+            string readyMessage = AdimiToolsMessageLanguage.IsEnglish
+                ? $"Score: {arena.Series!.SideAWins}:{arena.Series.SideBWins}. Both teams are ready; the next round starts in 3 seconds."
+                : $"当前比分 {arena.Series!.SideAWins}:{arena.Series.SideBWins}，双方准备完成，下一局 3 秒后开始。";
+            Announce(arena, readyMessage, playSound: true);
             return;
         }
 
@@ -1050,7 +1079,10 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
             arena.NextRoundAt = null;
             SetEnemies(arena, true);
             BeginLearningRound(arena);
-            Announce(arena, $"组队对战第 {arena.Series!.RoundsPlayed + 1} 局开始，当前比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。");
+            string startMessage = AdimiToolsMessageLanguage.IsEnglish
+                ? $"Team battle round {arena.Series!.RoundsPlayed + 1} begins. Score: {arena.Series.SideAWins}:{arena.Series.SideBWins} ({AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)})."
+                : $"组队对战第 {arena.Series!.RoundsPlayed + 1} 局开始，当前比分 {arena.Series.SideAWins}:{arena.Series.SideBWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.TargetWins)}）。";
+            Announce(arena, startMessage);
         }
     }
 
@@ -1098,7 +1130,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
         member.RespawnFrame = null;
         arena.NextRoundAt = null;
         RestoreTeam(arena, member, touchAgents: true);
-        Notify(member.Peer, "你已断线、换队或离开战斗区，整场退出，不能在后续小局重新加入。");
+        Notify(member.Peer, AdimiToolsMessageLanguage.Select("你已断线、换队或离开战斗区，整场退出，不能在后续小局重新加入。",
+            "You disconnected, changed teams, or left the arena. You cannot rejoin this match."));
     }
 
     private bool EndIfSideWithdrawn(Arena arena, double now)
@@ -1112,8 +1145,11 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
 
         bool? winner = a == 0 && b == 0 ? null : a != 0;
         arena.Series?.Forfeit(winner);
-        string result = !winner.HasValue ? "组队对战结束：双方均已整场退出。"
-            : $"组队对战结束：{(winner.Value ? "B" : "A")} 队无人可继续，{(winner.Value ? "A" : "B")} 队获胜。";
+        string result = !winner.HasValue
+            ? AdimiToolsMessageLanguage.Select("组队对战结束：双方均已整场退出。", "Team battle ended: both teams withdrew.")
+            : AdimiToolsMessageLanguage.IsEnglish
+                ? $"Team battle ended: Team {(winner.Value ? "B" : "A")} has no players left; Team {(winner.Value ? "A" : "B")} wins."
+                : $"组队对战结束：{(winner.Value ? "B" : "A")} 队无人可继续，{(winner.Value ? "A" : "B")} 队获胜。";
         End(arena, result, now);
         return true;
     }
@@ -1480,7 +1516,8 @@ internal sealed class AdimiToolsTeamBattleBehavior : MissionLogic
                 GameNetwork.EndBroadcastModuleEvent(GameNetwork.EventBroadcastFlags.AddToMissionRecord);
             }
 
-            Notify(move.agent.MissionPeer!, "此处组队对战正在进行，已将你移至区域外出生点。");
+            Notify(move.agent.MissionPeer!, AdimiToolsMessageLanguage.Select("此处组队对战正在进行，已将你移至区域外出生点。",
+                "A team battle is in progress here. You were moved to a spawn point outside the arena."));
         }
 
         return true;

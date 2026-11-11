@@ -80,7 +80,7 @@ internal sealed class AdimiToolsAiArenaAttackTactics : AgentComponent
             }
 
             if (!eligible || threat || targetIndex < 0 || weapon == null
-                || (difficulty != 2 && difficulty != 3) || !double.IsFinite(feintRoll) || !double.IsFinite(comboRoll))
+                || difficulty != 3 || !double.IsFinite(feintRoll) || !double.IsFinite(comboRoll))
             {
                 ClearCore(preserveHitGrace: true, preserveBlockedSwing: true);
                 return;

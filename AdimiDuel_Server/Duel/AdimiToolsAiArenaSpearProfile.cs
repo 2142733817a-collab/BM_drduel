@@ -24,7 +24,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
         HealthLimit = heroClass.Health;
         BaseHealthLimit = heroClass.Health;
         ArmorHead = ArmorTorso = ArmorArms = ArmorLegs = heroClass.ArmorValue;
-        TroopName = Character.Name.ToString();
+        var troopName = Character.Name;
+        TroopName = AdimiToolsMessageLanguage.NativeName(troopName.Value, troopName.ToString());
     }
 
     public BasicCultureObject Culture { get; }
@@ -60,7 +61,9 @@ internal sealed class AdimiToolsAiArenaSpearProfile
                     .FirstOrDefault(candidate => candidate?.StringId == selection.culture);
                 if (culture == null || !TryCreateForCulture(culture, out AdimiToolsAiArenaSpearProfile? profile, out reason))
                 {
-                    reason = $"{selection.culture} 的原版持矛步兵数据不可用，本次挑战未开始。";
+                    reason = AdimiToolsMessageLanguage.Select(
+                        $"{selection.culture} 的原版持矛步兵数据不可用，本次挑战未开始。",
+                        $"Native spear infantry data for {char.ToUpperInvariant(selection.culture[0])}{selection.culture.Substring(1)} is unavailable. The challenge was not started.");
                     return false;
                 }
 
@@ -70,7 +73,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
             AdimiToolsAiArenaSpearProfile? voulgier = CreateVlandianVoulgier(result.First(profile => profile.Culture.StringId == "vlandia"));
             if (voulgier == null)
             {
-                reason = "瓦兰迪亚的原版斧枪兵数据不可用，本次挑战未开始。";
+                reason = AdimiToolsMessageLanguage.Select("瓦兰迪亚的原版斧枪兵数据不可用，本次挑战未开始。",
+                    "Native Vlandian Voulgier data is unavailable. The challenge was not started.");
                 return false;
             }
 
@@ -82,7 +86,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
         catch (Exception exception)
         {
             Debug.Print($"[Adimi Tools]: Spear AI catalog could not be created: {exception}");
-            reason = "持矛步兵的原版数据读取失败，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("持矛步兵的原版数据读取失败，本次挑战未开始。",
+                "Could not read native spear infantry data. The challenge was not started.");
             return false;
         }
     }
@@ -90,7 +95,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
     internal static bool TryCreateForCulture(BasicCultureObject culture, out AdimiToolsAiArenaSpearProfile? profile, out string reason)
     {
         profile = null;
-        reason = "所选阵营没有完整的原版持矛步兵配置。";
+        reason = AdimiToolsMessageLanguage.Select("所选阵营没有完整的原版持矛步兵配置。",
+            "The selected faction has no complete native spear infantry configuration.");
         try
         {
             var selection = Selections.FirstOrDefault(candidate => candidate.culture == culture.StringId);
@@ -121,7 +127,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
                     && weapon.WeaponClass is WeaponClass.OneHandedPolearm or WeaponClass.TwoHandedPolearm));
             if (!validWeapon)
             {
-                reason = "所选阵营的原版步战矛不可用，本次挑战未开始。";
+                reason = AdimiToolsMessageLanguage.Select("所选阵营的原版步战矛不可用，本次挑战未开始。",
+                    "The selected faction's native infantry spear is unavailable. The challenge was not started.");
                 return false;
             }
 
@@ -140,7 +147,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
                     if (equipment[slot].Item?.Weapons.Any(weapon => weapon.WeaponClass is WeaponClass.Bow
                         or WeaponClass.Crossbow or WeaponClass.Arrow or WeaponClass.Bolt) == true)
                     {
-                        reason = "阿塞莱散兵配置包含弓弩装备，本次挑战未开始。";
+                        reason = AdimiToolsMessageLanguage.Select("阿塞莱散兵配置包含弓弩装备，本次挑战未开始。",
+                            "The Aserai skirmisher configuration contains a bow or crossbow. The challenge was not started.");
                         return false;
                     }
                 }
@@ -171,7 +179,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
 
             if (sidearm.IsEmpty)
             {
-                reason = "所选阵营的原版近战副武器不可用，本次挑战未开始。";
+                reason = AdimiToolsMessageLanguage.Select("所选阵营的原版近战副武器不可用，本次挑战未开始。",
+                    "The selected faction's native melee sidearm is unavailable. The challenge was not started.");
                 return false;
             }
 
@@ -189,7 +198,8 @@ internal sealed class AdimiToolsAiArenaSpearProfile
         catch (Exception exception)
         {
             Debug.Print($"[Adimi Tools]: Spear AI profile could not be created: {exception}");
-            reason = "持矛步兵的原版数据读取失败，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("持矛步兵的原版数据读取失败，本次挑战未开始。",
+                "Could not read native spear infantry data. The challenge was not started.");
             return false;
         }
     }

@@ -49,9 +49,9 @@ internal sealed class AdimiToolsAiDuelDisplayState<TPeer, TDisplay>
 
         string prefix = difficulty switch
         {
-            1 => "AI简单",
-            2 => "AI一般",
-            3 => "AI困难",
+            1 => AdimiToolsMessageLanguage.Select("AI简单", "Easy AI"),
+            2 => AdimiToolsMessageLanguage.Select("AI一般", "Normal AI"),
+            3 => AdimiToolsMessageLanguage.Select("AI困难", "Hard AI"),
             _ => throw new ArgumentOutOfRangeException(nameof(difficulty)),
         };
         return $"[{prefix}] {name} ×{totalCount}";

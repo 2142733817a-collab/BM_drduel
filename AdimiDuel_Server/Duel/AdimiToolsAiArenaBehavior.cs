@@ -155,9 +155,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     private readonly Dictionary<MissionPeer, double> _nextInterferenceWarningAt = new();
     private readonly HashSet<Agent> _deferredMountCleanup = new();
     private readonly List<Agent> _backSwingAttackers = new();
+    private readonly HashSet<Agent> _kickMissRecoveryAttackers = new();
     private readonly List<(int BotIndex, float DistanceSquared)> _kickCandidates = new();
     private readonly Dictionary<(string main, string offhand, bool leftStance),
-        (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing)> _meleeDirections = new();
+        (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing, Agent.MovementControlFlag thrust)> _meleeDirections = new();
     private readonly AdimiToolsAiArenaAppearance _aiAppearance = new();
     private readonly Dictionary<MissionPeer, string> _learningTokens = new();
     private readonly ConcurrentDictionary<int, AdimiToolsAiLearningCapture> _learningActors = new();
@@ -292,13 +293,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             AdimiToolsConsoleLog.Log($"Co-op AI TK switch failed: {exception.Message}");
-            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice("队友 TK 切换失败。"), ordinaryChat: true);
+            Notify(peer, AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(
+                MessageText("队友 TK 切换失败。", "Could not change friendly fire.")), ordinaryChat: true);
             return true;
         }
 
         arena.FriendlyFireEnabled = enabled;
         string message = AdimiToolsDuelGuidanceText.GetFriendlyFireNotice(
-            enabled ? "此对局队友 TK 已开启。" : "此对局队友 TK 已关闭。");
+            enabled ? MessageText("此对局队友 TK 已开启。", "Friendly fire is enabled for this match.")
+                : MessageText("此对局队友 TK 已关闭。", "Friendly fire is disabled for this match."));
         if (!arena.OwnerWithdrew && arena.Session.Owner is MissionPeer owner)
         {
             Notify(owner, message, ordinaryChat: true);
@@ -472,8 +475,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     {
         if (agent.IsHuman && agent.Controller == AgentControllerType.AI && agent.Origin is AdimiToolsAiArenaOrigin)
         {
+            // Snapshot and, when safe, release only the old held guard before
+            // every reader gets a chance to publish a new incoming defense.
+            AdimiToolsAiArenaParryGuardFilter? parryFilter = agent.GetComponent<AdimiToolsAiArenaParryGuardFilter>();
+            if (parryFilter == null)
+            {
+                parryFilter = new AdimiToolsAiArenaParryGuardFilter(agent);
+                agent.AddComponent(parryFilter);
+            }
+
             // Native calls OnAgentBuild before SpawnAgent completes. Attach and
             // enable once here, rather than changing callback state mid-fight.
+            // Remove unauthorized Native kick input before the guard readers;
+            // the later kick component alone may emit an approved counter.
+            AdimiToolsAiArenaKickFilter? kickFilter = agent.GetComponent<AdimiToolsAiArenaKickFilter>();
+            if (kickFilter == null)
+            {
+                kickFilter = new AdimiToolsAiArenaKickFilter(agent);
+                agent.AddComponent(kickFilter);
+            }
+
             // Initiative runs first so a later actual-threat guard, kick or
             // counter can still take priority in the same input callback.
             if (agent.GetComponent<AdimiToolsAiArenaAttackInitiative>() == null)
@@ -487,15 +508,21 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             bool hard = agent.Origin is AdimiToolsAiArenaEnhancedOrigin { Difficulty: AdimiToolsAiArenaDifficulty.Hard };
-            if (hard && agent.GetComponent<AdimiToolsAiArenaReadGuard>() == null)
+            // All arena difficulties may need a short defensive read after a
+            // missed counter-kick. Ordinary read assistance stays hard-only.
+            if (agent.GetComponent<AdimiToolsAiArenaReadGuard>() == null)
             {
                 agent.AddComponent(new AdimiToolsAiArenaReadGuard(agent));
             }
 
-            if (agent.GetComponent<AdimiToolsAiArenaParryCounter>() == null)
+            AdimiToolsAiArenaParryCounter? parryCounter = agent.GetComponent<AdimiToolsAiArenaParryCounter>();
+            if (parryCounter == null)
             {
-                agent.AddComponent(new AdimiToolsAiArenaParryCounter(agent));
+                parryCounter = new AdimiToolsAiArenaParryCounter(agent);
+                agent.AddComponent(parryCounter);
             }
+
+            parryFilter.Bind(parryCounter);
 
             if (agent.GetComponent<AdimiToolsAiArenaHitCounter>() == null)
             {
@@ -507,11 +534,25 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 agent.AddComponent(new AdimiToolsAiArenaKickPunish(agent));
             }
 
-            if (agent.GetComponent<AdimiToolsAiArenaKick>() == null)
+            AdimiToolsAiArenaKick? kickController = agent.GetComponent<AdimiToolsAiArenaKick>();
+            if (kickController == null)
             {
                 AdimiToolsAiArenaKickPunish? kickPunish = agent.GetComponent<AdimiToolsAiArenaKickPunish>();
                 Action<double, int>? onCounterKick = kickPunish == null ? null : kickPunish.NotifyCounterKickSent;
-                agent.AddComponent(new AdimiToolsAiArenaKick(agent, onCounterKick));
+                kickController = new AdimiToolsAiArenaKick(agent, onCounterKick);
+                agent.AddComponent(kickController);
+            }
+
+            kickFilter.Bind(kickController);
+
+            if (hard && agent.GetComponent<AdimiToolsAiArenaParryFeint>() == null)
+            {
+                agent.AddComponent(new AdimiToolsAiArenaParryFeint(agent));
+            }
+
+            if (hard && agent.GetComponent<AdimiToolsAiArenaLightning>() == null)
+            {
+                agent.AddComponent(new AdimiToolsAiArenaLightning(agent));
             }
 
             if (agent.Origin is AdimiToolsAiArenaEnhancedOrigin { Difficulty: >= 2 }
@@ -621,54 +662,56 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         bool canYieldReadiness = !arena.Session.IsReserved && teamBattle?.CanYieldAiReadiness(arena.Area) == true;
         if (arena.DuelBoundary?.IsOwnedByOther(arena) == true && !canYieldReadiness)
         {
-            Notify(peer, "本场地已被其他对局占用。");
+            Notify(peer, MessageText("本场地已被其他对局占用。", "This arena is already in use."));
             return;
         }
 
         if (arena.Shared?.Owns(arena) == true && !arena.Session.IsReserved)
         {
-            Notify(peer, "本场地仍在完成清理和障碍复位，请稍后再试。");
+            Notify(peer, MessageText("本场地仍在完成清理和障碍复位，请稍后再试。", "This arena is still being cleared and reset. Please try again shortly."));
             return;
         }
 
         if (arena.CleanupPending)
         {
-            Notify(peer, "本组挑战正在结束，请稍后再试。");
+            Notify(peer, MessageText("本组挑战正在结束，请稍后再试。", "This challenge is ending. Please try again shortly."));
             return;
         }
 
         if (arena.AreaCleanupPending && !arena.Session.IsReserved)
         {
-            Notify(peer, "训练区域正在清理，请稍后再试。");
+            Notify(peer, MessageText("训练区域正在清理，请稍后再试。", "The training area is being cleared. Please try again shortly."));
             return;
         }
 
         if (now < arena.LoweringUntil || (!arena.Session.IsReserved
             && arena.Barriers.Any(barrier => barrier.TargetFrame.HasValue || !barrier.Synched.SynchronizeCompleted)))
         {
-            Notify(peer, "障碍物正在复位，请稍后再试。");
+            Notify(peer, MessageText("障碍物正在复位，请稍后再试。", "The barriers are resetting. Please try again shortly."));
             return;
         }
 
         if (_duelMode?.IsPeerBusyForAiChallenge(peer) == true || (!arena.Session.IsReserved && IsPeerReserved(peer))
             || teamBattle?.IsPeerReservedForAi(peer, arena.Area) == true || teamBattle?.IsPositionInActiveArena(agent.Position) == true)
         {
-            Notify(peer, "请先结束当前决斗或 AI 挑战。");
+            Notify(peer, MessageText("请先结束当前决斗或 AI 挑战。", "Finish your current duel or AI challenge first."));
             return;
         }
 
         if (arena.Area != null && !arena.Area.IsPointIn(agent.Position))
         {
-            Notify(peer, "请进入本组训练区域后再敲击。");
+            Notify(peer, MessageText("请进入本组训练区域后再敲击。", "Enter this training area before hitting the trigger."));
             return;
         }
 
         if (arena.Session.State == AdimiToolsAiArenaState.CountingDown && ReferenceEquals(arena.Session.Owner, peer)
             && (arena.Difficulty != difficulty || (arena.SpearCandidates != null) != spearInfantry))
         {
-            string selected = arena.SpearCandidates != null ? "持矛步兵" : AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI";
+            string selected = arena.SpearCandidates != null
+                ? MessageText("持矛步兵", "spearmen") : AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI";
             Notify(peer, AdimiToolsDuelGuidanceText.GetAiSwitchNotice(
-                $"本次已选择{selected}，请继续敲击同一种触发物，或等本次挑战结束后再切换。"), ordinaryChat: true);
+                MessageText($"本次已选择{selected}，请继续敲击同一种触发物，或等本次挑战结束后再切换。",
+                    $"You selected {selected}. Hit the same trigger again, or wait until this challenge ends to switch.")), ordinaryChat: true);
             return;
         }
 
@@ -713,7 +756,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         bool acquiredShared = arena.Shared != null && !arena.Shared.Owns(arena);
         if (arena.Shared?.TryAcquire(arena) == false)
         {
-            Notify(peer, "本场地正在进行玩家队战或清理，请稍后再试。");
+            Notify(peer, MessageText("本场地正在进行玩家队战或清理，请稍后再试。", "A team match or cleanup is in progress here. Please try again shortly."));
             return;
         }
 
@@ -725,7 +768,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (result == AdimiToolsAiArenaHitResult.OwnedByAnother || result == AdimiToolsAiArenaHitResult.AlreadyRunning)
         {
-            Notify(peer, "本组 AI 挑战正在使用中。");
+            Notify(peer, MessageText("本组 AI 挑战正在使用中。", "This AI challenge is already in use."));
             return;
         }
 
@@ -837,6 +880,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 && arena.Session.State == AdimiToolsAiArenaState.Running
                 && arena.DuelBoundary?.IsOwnedByOther(arena) != true && (arena.Shared == null || arena.Shared.Owns(arena));
             _backSwingAttackers.Clear();
+            _kickMissRecoveryAttackers.Clear();
             if (running)
             {
                 try
@@ -882,6 +926,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 AdimiToolsAiArenaKick? kick = bot.GetComponent<AdimiToolsAiArenaKick>();
                 AdimiToolsAiArenaKickPunish? punish = bot.GetComponent<AdimiToolsAiArenaKickPunish>();
                 AdimiToolsAiArenaParryCounter? parry = bot.GetComponent<AdimiToolsAiArenaParryCounter>();
+                AdimiToolsAiArenaParryFeint? parryFeint = bot.GetComponent<AdimiToolsAiArenaParryFeint>();
+                AdimiToolsAiArenaLightning? lightning = bot.GetComponent<AdimiToolsAiArenaLightning>();
                 AdimiToolsAiArenaHitCounter? counter = bot.GetComponent<AdimiToolsAiArenaHitCounter>();
                 AdimiToolsAiArenaAttackTactics? tactics = bot.GetComponent<AdimiToolsAiArenaAttackTactics>();
                 AdimiToolsAiArenaLearnedAttack? learned = bot.GetComponent<AdimiToolsAiArenaLearnedAttack>();
@@ -889,6 +935,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 AdimiToolsAiArenaAttackInitiative? initiative = bot.GetComponent<AdimiToolsAiArenaAttackInitiative>();
                 if (guard == null)
                 {
+                    arena.KickAssignments.AbandonBot(bot.Index);
+                    parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+                    lightning?.Suspend();
+                    kick?.SetCounterOnlyScope(false);
                     initiative?.Clear();
                     readGuard?.Clear();
                     kick?.Clear();
@@ -903,8 +953,16 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
                 try
                 {
+                    // Publish the infantry-only filter on the mission thread;
+                    // the asynchronous input callback never reads an Agent.
+                    kick?.SetCounterOnlyScope((running || assignmentFailed) && IsLivingAgent(bot) && bot.Team == arena.BotTeam
+                        && (arena.Kind is AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
+                        && bot.MountAgent == null);
                     if (!running || _backSwingAttackers.Count == 0 || !IsLivingAgent(bot) || bot.Team != arena.BotTeam)
                     {
+                        arena.KickAssignments.AbandonBot(bot.Index);
+                        parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+                        lightning?.Suspend();
                         initiative?.Clear();
                         guard.Clear();
                         readGuard?.Clear();
@@ -944,6 +1002,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     catch (Exception exception)
                     {
                         combatSamplingOk = false;
+                        arena.KickAssignments.AbandonBot(bot.Index);
+                        parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+                        lightning?.Suspend();
                         initiative?.Clear();
                         readGuard?.Clear();
                         kick?.Suspend();
@@ -988,6 +1049,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 }
                 catch (Exception exception)
                 {
+                    arena.KickAssignments.AbandonBot(bot.Index);
+                    parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+                    lightning?.Suspend();
                     initiative?.Clear();
                     guard.Clear();
                     readGuard?.Clear();
@@ -1003,6 +1067,12 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
         }
     }
+
+    // Select only a nearby on-foot defender when the kick begins. Once chosen,
+    // allow a short additional pursuit if the player moves out of that radius.
+    private const float CounterKickSelectionDistance = 3f;
+    private const float CounterKickTrackingDistance = 4f;
+    private const float CounterKickMinimumDistanceSquared = AdimiToolsAiArenaKick.MinDistance * AdimiToolsAiArenaKick.MinDistance;
 
     private void UpdateKickAssignments(Arena arena, bool running)
     {
@@ -1022,6 +1092,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             bool kicking = IsFootworkKick(player.GetCurrentActionType(0)) || IsFootworkKick(player.GetCurrentActionType(1));
+            if (kicking && AdimiToolsAiArenaKickRecovery.IsMissStepBack(player))
+            {
+                _kickMissRecoveryAttackers.Add(player);
+            }
             if (!kicking && arena.KickAssignments.TryGetRecordedAssignee(player.Index, out int previousBot))
             {
                 Agent? previous = arena.Bots.FirstOrDefault(bot => bot.Index == previousBot && IsLivingAgent(bot));
@@ -1055,14 +1129,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     float distanceSquared = (playerPosition.AsVec2 - botPosition.AsVec2).LengthSquared;
                     float length = usage.GetRealWeaponLength();
                     if (!playerPosition.IsValid || !botPosition.IsValid || !float.IsFinite(length)
-                        || !float.IsFinite(distanceSquared) || distanceSquared < 0.16f
+                        || !float.IsFinite(distanceSquared) || distanceSquared < CounterKickMinimumDistanceSquared
                         || Math.Abs(playerPosition.z - botPosition.z) > 0.8f)
                     {
                         continue;
                     }
 
-                    float reach = Math.Clamp(length, 0.4f, 2.5f) + 1.1f;
-                    if (distanceSquared <= reach * reach)
+                    if (distanceSquared <= CounterKickSelectionDistance * CounterKickSelectionDistance)
                     {
                         _kickCandidates.Add((bot.Index, distanceSquared));
                     }
@@ -1079,12 +1152,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         AdimiToolsAiArenaKick? kick, AdimiToolsAiArenaKickPunish? punish, AdimiToolsAiArenaParryCounter? parry,
         AdimiToolsAiArenaHitCounter? counter, AdimiToolsAiArenaAttackTactics? tactics)
     {
+        AdimiToolsAiArenaParryFeint? parryFeint = bot.GetComponent<AdimiToolsAiArenaParryFeint>();
+        AdimiToolsAiArenaLightning? lightning = bot.GetComponent<AdimiToolsAiArenaLightning>();
         // In co-op the normal target allocator can have chosen someone else.
-        // Face the player whose blow was blocked while the brief opportunity
-        // exists; normal target distribution resumes afterwards.
+        // A confirmed counter or a kick that hit another live arena opponent
+        // briefly faces its actual counterpart; normal targeting resumes later.
         int parryAttacker = parry?.PendingAttackerIndex ?? -1;
         int counterAttacker = counter?.GetPendingAttackerIndex(Mission.CurrentTime) ?? -1;
-        int responseAttacker = parryAttacker >= 0 ? parryAttacker : counterAttacker;
+        int kickedOpponent = punish?.GetPendingFollowTargetIndex(Mission.CurrentTime) ?? -1;
+        int pendingKickTarget = punish?.GetPendingKickTargetIndex(Mission.CurrentTime) ?? -1;
+        if (pendingKickTarget >= 0 && HasIncomingMeleeThreat(bot, parry, Mission.CurrentTime))
+        {
+            pendingKickTarget = -1;
+        }
+
+        int responseAttacker = parryAttacker >= 0 ? parryAttacker : counterAttacker >= 0 ? counterAttacker
+            : kickedOpponent >= 0 ? kickedOpponent : pendingKickTarget;
         Agent? responseTarget = _backSwingAttackers.FirstOrDefault(player => player.Index == responseAttacker && IsLivingAgent(player));
         if (responseTarget != null && !ReferenceEquals(bot.GetTargetAgent(), responseTarget)
             && (arena.Kind is AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear) && bot.MountAgent == null)
@@ -1099,11 +1182,134 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             && bot.MountAgent == null && target != null && _backSwingAttackers.Contains(target) && IsLivingAgent(target)
             && usage?.IsMeleeWeapon == true && !usage.IsRangedWeapon;
 
+        if (!eligible || target == null || usage == null)
+        {
+            parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+            lightning?.Suspend();
+            arena.KickAssignments.AbandonBot(bot.Index);
+            readGuard?.Clear();
+            counter?.Clear();
+            kick?.Clear();
+            punish?.Clear();
+            parry?.Clear();
+            tactics?.Suspend();
+            return;
+        }
+
+        // A retargeted bot must not later reacquire an old kick after missing
+        // possible contacts while it was observing a different opponent.
+        arena.KickAssignments.AbandonBot(bot.Index, target.Index);
+
+        bool activeKick = arena.KickAssignments.HasActiveKick(target.Index);
+        bool assigned = arena.KickAssignments.TryGetAssigned(target.Index, out int assignedBot) && assignedBot == bot.Index;
+
+        Vec3 position = bot.Position;
+        Vec3 targetPosition = target.Position;
+        float distanceSquared = (targetPosition.AsVec2 - position.AsVec2).LengthSquared;
+        float reach = Math.Clamp(usage.GetRealWeaponLength(), 0.4f, 2.5f) + 1.1f;
+        bool validPositions = position.IsValid && targetPosition.IsValid && float.IsFinite(distanceSquared)
+            && float.IsFinite(reach) && Math.Abs(position.z - targetPosition.z) <= 0.8f;
+        bool ordinaryRange = validPositions && distanceSquared >= 0.16f && distanceSquared <= reach * reach;
+        bool counterRange = validPositions && assigned && activeKick && target.MountAgent == null
+            && distanceSquared >= CounterKickMinimumDistanceSquared
+            && distanceSquared <= CounterKickTrackingDistance * CounterKickTrackingDistance;
+        if (assigned && activeKick && !counterRange)
+        {
+            // Do not reacquire this same kick after leaving its bound: contacts
+            // can occur while its selected bot is out of observation range.
+            arena.KickAssignments.Abandon(target.Index, bot.Index);
+            assigned = false;
+            punish?.Clear();
+            kick?.Suspend();
+        }
+
+        bool suppressDuplicateKick = AdimiToolsAiArenaAgentStatModel.KickDesire > 0f && activeKick && !assigned;
+        kick?.PublishDuplicateKickSuppression(suppressDuplicateKick);
+        if (!ordinaryRange && !counterRange)
+        {
+            parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+            lightning?.Suspend();
+            readGuard?.Clear();
+            counter?.Clear();
+            if (!suppressDuplicateKick)
+            {
+                kick?.Clear();
+            }
+
+            punish?.Clear();
+            parry?.Clear();
+            tactics?.Suspend();
+            return;
+        }
+
+        if (!ordinaryRange)
+        {
+            parryFeint?.Cancel(Mission.CurrentTime, dueToThreat: false);
+            lightning?.Suspend();
+            // The wider interval exists only for this player's assigned
+            // counter-kick. Withdraw unrelated offensive/defensive tactics so
+            // it cannot extend their ordinary combat range.
+            counter?.Clear();
+            parry?.Clear();
+            tactics?.Suspend();
+        }
+
+        Agent.ActionCodeType upper = bot.GetCurrentActionType(1);
+        Agent.ActionCodeType lower = bot.GetCurrentActionType(0);
+        Agent.ActionStage stage = bot.GetCurrentActionStage(1);
+        bool nativeAttack = upper is Agent.ActionCodeType.ReadyMelee or Agent.ActionCodeType.ReleaseMelee;
+        bool incapacitated = bot.IsInBeingStruckAction || IsFootworkInterrupted(upper) || IsFootworkInterrupted(lower)
+            || stage == Agent.ActionStage.DefendParry;
+        int upperType = (int)upper;
+        bool defending = stage == Agent.ActionStage.Defend
+            || (upperType >= (int)Agent.ActionCodeType.DefendAllBegin && upperType < (int)Agent.ActionCodeType.DefendAllEnd);
+        bool otherThreat = HasIncomingMeleeThreat(bot, parry, Mission.CurrentTime);
+        bool needsDirections = (ordinaryRange && (tactics != null || counter?.HasPendingOrControl == true
+            || parry?.HasPendingOrControl == true || parryFeint?.HasPendingOrControl == true
+            || lightning?.HasPendingOrControl == true))
+            || punish?.HasPendingOrControl == true;
+        bool leftStance = needsDirections && bot.GetIsLeftStance();
+        MissionWeapon offhand = bot.WieldedOffhandWeapon;
+        (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing, Agent.MovementControlFlag thrust) = needsDirections
+            ? GetMeleeAttackDirections(usage, offhand, leftStance)
+            : (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
+        Agent.MovementControlFlag preferred = needsDirections
+            ? PreferredMeleeSide(position, targetPosition, bot.LookDirection.AsVec2, leftStance)
+            : Agent.MovementControlFlag.None;
+
+        // A follow-up may be readied while our own kick animation continues.
+        // Hit/fall/parry and a new incoming threat still take priority.
+        bool ownKicking = IsFootworkKick(upper) || IsFootworkKick(lower);
+        bool confirmedMissRecovery = _kickMissRecoveryAttackers.Contains(target);
+        // The assignment debounces animation gaps independently. Feeding that
+        // debounce into the miss observer would add a second serial delay.
+        bool enemyKicking = !confirmedMissRecovery && (IsFootworkKick(target.GetCurrentActionType(0))
+            || IsFootworkKick(target.GetCurrentActionType(1)));
+        if (enemyKicking && distanceSquared <= 1.8f * 1.8f)
+        {
+            otherThreat = true;
+        }
+
+        bool comboStun = bot.IsInBeingStruckAction || (IsFootworkInterrupted(upper) && !IsFootworkKick(upper))
+            || (IsFootworkInterrupted(lower) && !IsFootworkKick(lower)) || stage == Agent.ActionStage.DefendParry
+            || parry?.HasPendingOrControl == true || counter?.HasPendingOrControl == true;
+        bool punishEligible = target.MountAgent == null && AdimiToolsAiArenaAgentStatModel.KickDesire > 0f
+            && !suppressDuplicateKick;
+        bool cancelableOwnReady = !otherThreat && !comboStun && upper == Agent.ActionCodeType.ReadyMelee
+            && stage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady;
+        punish?.Observe(Mission.CurrentTime, target.Index, punishEligible, enemyKicking, ownKicking, nativeAttack,
+            comboStun, otherThreat, arena.Difficulty, Random.Shared.NextDouble(), allowed, preferred,
+            cancelableOwnReady, confirmedMissRecovery);
+
         if (readGuard != null)
         {
-            if (eligible && arena.Difficulty == AdimiToolsAiArenaDifficulty.Hard)
+            bool normalRead = ordinaryRange && arena.Difficulty == AdimiToolsAiArenaDifficulty.Hard;
+            bool observeKick = punish?.CanObserveGuardAfterKick(target.Index) == true;
+            bool guardMiss = punish?.WantsGuardAfterMiss(target.Index) == true;
+            if (normalRead || observeKick || guardMiss)
             {
-                readGuard.BeginSampling(Mission.CurrentTime);
+                readGuard.BeginSampling(Mission.CurrentTime, afterMiss: guardMiss,
+                    observeAfterKick: observeKick, normalReadEnabled: normalRead);
                 foreach (Agent attacker in _backSwingAttackers)
                 {
                     if (!YieldGuardForBlockedSwing(parry, attacker, Mission.CurrentTime))
@@ -1120,91 +1326,56 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
         }
 
-        if (!eligible || target == null || usage == null)
-        {
-            counter?.Clear();
-            kick?.Clear();
-            punish?.Clear();
-            parry?.Clear();
-            tactics?.Suspend();
-            return;
-        }
-
-        bool activeKick = arena.KickAssignments.HasActiveKick(target.Index);
-        bool assigned = arena.KickAssignments.TryGetAssigned(target.Index, out int assignedBot) && assignedBot == bot.Index;
-        bool suppressDuplicateKick = AdimiToolsAiArenaAgentStatModel.KickDesire > 0f && activeKick && !assigned;
-        kick?.PublishDuplicateKickSuppression(suppressDuplicateKick);
-
-        Vec3 position = bot.Position;
-        Vec3 targetPosition = target.Position;
-        float distanceSquared = (targetPosition.AsVec2 - position.AsVec2).LengthSquared;
-        float reach = Math.Clamp(usage.GetRealWeaponLength(), 0.4f, 2.5f) + 1.1f;
-        if (!position.IsValid || !targetPosition.IsValid || !float.IsFinite(distanceSquared) || !float.IsFinite(reach)
-            || distanceSquared < 0.16f || distanceSquared > reach * reach || Math.Abs(position.z - targetPosition.z) > 0.8f)
-        {
-            counter?.Clear();
-            if (!suppressDuplicateKick)
-            {
-                kick?.Clear();
-            }
-
-            punish?.Clear();
-            parry?.Clear();
-            tactics?.Suspend();
-            return;
-        }
-
-        Agent.ActionCodeType upper = bot.GetCurrentActionType(1);
-        Agent.ActionCodeType lower = bot.GetCurrentActionType(0);
-        Agent.ActionStage stage = bot.GetCurrentActionStage(1);
-        bool nativeAttack = upper is Agent.ActionCodeType.ReadyMelee or Agent.ActionCodeType.ReleaseMelee;
-        bool incapacitated = bot.IsInBeingStruckAction || IsFootworkInterrupted(upper) || IsFootworkInterrupted(lower)
-            || stage == Agent.ActionStage.DefendParry;
-        int upperType = (int)upper;
-        bool defending = stage == Agent.ActionStage.Defend
-            || (upperType >= (int)Agent.ActionCodeType.DefendAllBegin && upperType < (int)Agent.ActionCodeType.DefendAllEnd);
-        bool otherThreat = HasIncomingMeleeThreat(bot, parry, Mission.CurrentTime);
-        bool needsDirections = tactics != null || counter?.HasPendingOrControl == true || parry?.HasPendingOrControl == true
-            || punish?.HasPendingOrControl == true;
-        bool leftStance = needsDirections && bot.GetIsLeftStance();
-        MissionWeapon offhand = bot.WieldedOffhandWeapon;
-        (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing) = needsDirections
-            ? GetMeleeAttackDirections(usage, offhand, leftStance)
-            : (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
-        Agent.MovementControlFlag preferred = needsDirections
-            ? PreferredMeleeSide(position, targetPosition, bot.LookDirection.AsVec2, leftStance)
-            : Agent.MovementControlFlag.None;
-
-        // A follow-up may be readied while our own kick animation continues.
-        // Hit/fall/parry and a new incoming threat still take priority.
-        bool ownKicking = IsFootworkKick(upper) || IsFootworkKick(lower);
-        bool enemyKicking = IsFootworkKick(target.GetCurrentActionType(0)) || IsFootworkKick(target.GetCurrentActionType(1))
-            || arena.KickAssignments.IsKickOngoing(target.Index);
-        if (enemyKicking && distanceSquared <= 1.8f * 1.8f)
-        {
-            otherThreat = true;
-        }
-
-        bool comboStun = bot.IsInBeingStruckAction || (IsFootworkInterrupted(upper) && !IsFootworkKick(upper))
-            || (IsFootworkInterrupted(lower) && !IsFootworkKick(lower)) || stage == Agent.ActionStage.DefendParry
-            || parry?.HasPendingOrControl == true || counter?.HasPendingOrControl == true;
-        bool punishEligible = target.MountAgent == null && AdimiToolsAiArenaAgentStatModel.KickDesire > 0f
-            && !suppressDuplicateKick;
-        punish?.Observe(Mission.CurrentTime, target.Index, punishEligible, enemyKicking, ownKicking, nativeAttack,
-            comboStun, otherThreat, arena.Difficulty, Random.Shared.NextDouble(), allowed, preferred);
         if (!suppressDuplicateKick)
         {
             PublishKick(bot, target, kick, punish, parry, counter, tactics, position, targetPosition,
                 upper, lower, stage, otherThreat, Mission.CurrentTime);
         }
 
-        if (!needsDirections)
+        if (!ordinaryRange || !needsDirections)
         {
             return;
         }
 
-        parry?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated, nativeAttack, otherThreat, allowed, preferred);
+        Agent.MovementControlFlag sideSwings = swing & (Agent.MovementControlFlag.AttackLeft | Agent.MovementControlFlag.AttackRight);
+        Agent.MovementControlFlag starts = sideSwings == Agent.MovementControlFlag.None ? Agent.MovementControlFlag.None
+            : (swing & Agent.MovementControlFlag.AttackUp) | (thrust & Agent.MovementControlFlag.AttackDown);
+        Agent.MovementControlFlag feintFirst = starts switch
+        {
+            Agent.MovementControlFlag.AttackUp | Agent.MovementControlFlag.AttackDown => Random.Shared.Next(2) == 0
+                ? Agent.MovementControlFlag.AttackUp : Agent.MovementControlFlag.AttackDown,
+            Agent.MovementControlFlag.AttackUp => Agent.MovementControlFlag.AttackUp,
+            Agent.MovementControlFlag.AttackDown => Agent.MovementControlFlag.AttackDown,
+            _ => Agent.MovementControlFlag.None,
+        };
+        Agent.MovementControlFlag sampledGuard = !incapacitated && !otherThreat && defending && stage == Agent.ActionStage.Defend
+            ? bot.MovementFlags & (Agent.MovementControlFlag.DefendMask | Agent.MovementControlFlag.DefendBlock)
+            : Agent.MovementControlFlag.None;
+        Agent.UsageDirection ownDirection = bot.GetCurrentActionDirection(1);
+        parry?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated, nativeAttack, otherThreat, allowed, preferred,
+            requestedFeintFirst: feintFirst, observedDirection: ownDirection,
+            observedReady: upper == Agent.ActionCodeType.ReadyMelee && stage == Agent.ActionStage.AttackReady,
+            observedRelease: upper == Agent.ActionCodeType.ReleaseMelee && stage == Agent.ActionStage.AttackRelease,
+            sampledGuard: sampledGuard);
+        if (parry?.TryTakeFeintStart(target.Index, out _) == true)
+        {
+            parryFeint?.TryBegin(Mission.CurrentTime, target.Index, usage, offhand.IsEmpty ? null : offhand.CurrentUsageItem,
+                arena.Difficulty, eligible: true, otherThreat, incapacitated, upper, stage, ownDirection, allowed, swing,
+                attemptGuardAttackPulse: true);
+        }
+
+        bool feintEligible = parry?.HasPendingOrControl != true && counter?.HasPendingOrControl != true
+            && punish?.HasPendingOrControl != true;
+        parryFeint?.Observe(Mission.CurrentTime, target.Index, usage, offhand.IsEmpty ? null : offhand.CurrentUsageItem,
+            arena.Difficulty, feintEligible, otherThreat, incapacitated, upper, stage, ownDirection, allowed, swing);
         counter?.Observe(Mission.CurrentTime, target.Index, eligible: true, incapacitated || defending || otherThreat, nativeAttack, allowed, preferred);
+
+        float progress = upper == Agent.ActionCodeType.ReleaseMelee ? bot.GetCurrentActionProgress(1) : 0f;
+        bool lightningEligible = parry?.HasPendingOrControl != true && parryFeint?.HasPendingOrControl != true
+            && counter?.HasPendingOrControl != true && punish?.HasPendingOrControl != true;
+        lightning?.Observe(Mission.CurrentTime, target.Index, weapon.Item, lightningEligible, arena.Difficulty,
+            incapacitated, otherThreat, upper, stage, ownDirection, progress, swing,
+            offhand.IsEmpty ? null : offhand.Item);
 
         if (tactics == null)
         {
@@ -1218,8 +1389,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         bool enemyThreat = otherThreat || enemyAction == Agent.ActionCodeType.ReleaseMelee
             || IsFootworkKick(enemyAction) || IsFootworkKick(target.GetCurrentActionType(0));
         bool tacticEligible = !incapacitated && counter?.HasPendingOrControl != true && parry?.HasPendingOrControl != true
-            && punish?.HasPendingOrControl != true;
-        float progress = upper == Agent.ActionCodeType.ReleaseMelee ? bot.GetCurrentActionProgress(1) : 0f;
+            && punish?.HasPendingOrControl != true && parryFeint?.HasPendingOrControl != true
+            && lightning?.HasPendingOrControl != true;
         tactics.Observe(Mission.CurrentTime, target.Index, usage, offhand.IsEmpty ? null : offhand.CurrentUsageItem,
             tacticEligible, enemyThreat, arena.Difficulty, upper, stage, bot.GetCurrentActionDirection(1), progress,
             allowed, preferred, Random.Shared.NextDouble(), Random.Shared.NextDouble(), swing, enemyHoldingAttack);
@@ -1232,7 +1403,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     private static bool YieldGuardForBlockedSwing(AdimiToolsAiArenaParryCounter? parry, Agent attacker, double now) =>
         parry?.ShouldYieldGuardFor(attacker.Index, IsMeleeRelease(attacker), now) == true;
 
-    private bool HasIncomingMeleeThreat(Agent bot, AdimiToolsAiArenaParryCounter? parry, double now)
+    private bool HasIncomingMeleeThreat(Agent bot, AdimiToolsAiArenaParryCounter? parry, double now,
+        Agent? ignoreKickFrom = null)
     {
         foreach (Agent attacker in _backSwingAttackers)
         {
@@ -1240,7 +1412,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             // a new release by that player must be treated as a fresh threat.
             bool alreadyBlocked = YieldGuardForBlockedSwing(parry, attacker, now);
             bool released = IsMeleeRelease(attacker);
-            bool kicking = IsFootworkKick(attacker.GetCurrentActionType(0)) || IsFootworkKick(attacker.GetCurrentActionType(1));
+            bool kicking = !ReferenceEquals(attacker, ignoreKickFrom) && !_kickMissRecoveryAttackers.Contains(attacker)
+                && (IsFootworkKick(attacker.GetCurrentActionType(0)) || IsFootworkKick(attacker.GetCurrentActionType(1)));
             if ((!released || alreadyBlocked) && !kicking)
             {
                 continue;
@@ -1378,6 +1551,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         bool busy = bot.IsInBeingStruckAction || IsFootworkInterrupted(ownAction) || IsFootworkInterrupted(ownLower)
             || ownStage == Agent.ActionStage.DefendParry || parry?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaLightning>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaKick>()?.HasFreshOpportunityOrProtection() == true
@@ -1388,7 +1563,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             bool leftStance = bot.GetIsLeftStance();
             MissionWeapon offhand = bot.WieldedOffhandWeapon;
-            (allowed, _) = GetMeleeAttackDirections(usage, offhand, leftStance);
+            (allowed, _, _) = GetMeleeAttackDirections(usage, offhand, leftStance);
             preferred = PreferredMeleeSide(position, targetPosition, facing, leftStance);
         }
 
@@ -1433,13 +1608,18 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // component also checks a short-lived snapshot and only clears an
         // unambiguous guard; incoming threats cancel subsequent snapshots.
         bool allowGuardCancellation = regularGuard && !incomingThreat;
+        bool allowReadyCancellation = counterOpportunity && !incomingThreat && upper == Agent.ActionCodeType.ReadyMelee
+            && stage is Agent.ActionStage.AttackReady or Agent.ActionStage.AttackQuickReady;
         bool busy = bot.IsInBeingStruckAction || IsFootworkInterrupted(upper) || IsFootworkInterrupted(lower)
-            || (!allowGuardCancellation && upper is not (Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard or Agent.ActionCodeType.Other))
-            || (!allowGuardCancellation && stage != Agent.ActionStage.None);
+            || (!allowGuardCancellation && !allowReadyCancellation
+                && upper is not (Agent.ActionCodeType.Idle or Agent.ActionCodeType.Guard or Agent.ActionCodeType.Other))
+            || (!allowGuardCancellation && !allowReadyCancellation && stage != Agent.ActionStage.None);
         bool counterPending = parry?.HasPendingOrControl == true || counter?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaLightning>()?.HasPendingOrControl == true
             || tactics?.OwnsAttackInput == true || (punish?.HasPendingOrControl == true && !counterOpportunity);
         bool kickClear = false;
-        if (distance <= AdimiToolsAiArenaKick.MaxDistance && !busy && !incomingThreat && !counterPending)
+        if (counterOpportunity && distance <= AdimiToolsAiArenaKick.MaxDistance && !busy && !incomingThreat && !counterPending)
         {
             try
             {
@@ -1456,14 +1636,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             allowGuardCancellation: allowGuardCancellation);
     }
 
-    private (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing) GetMeleeAttackDirections(
+    private (Agent.MovementControlFlag allowed, Agent.MovementControlFlag swing, Agent.MovementControlFlag thrust) GetMeleeAttackDirections(
         WeaponComponentData usage, MissionWeapon offhand, bool leftStance)
     {
         string? mainUsage = usage.ItemUsage;
         string? offhandUsage = offhand.IsEmpty ? string.Empty : offhand.CurrentUsageItem?.ItemUsage;
         if (string.IsNullOrEmpty(mainUsage) || offhandUsage == null)
         {
-            return (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
+            return (Agent.MovementControlFlag.None, Agent.MovementControlFlag.None, Agent.MovementControlFlag.None);
         }
 
         var key = (mainUsage, offhandUsage, leftStance);
@@ -1478,6 +1658,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         int offhandIndex = offhandUsage.Length == 0 ? -1 : MBItem.GetItemUsageIndex(offhandUsage);
         Agent.MovementControlFlag result = Agent.MovementControlFlag.None;
         Agent.MovementControlFlag swing = Agent.MovementControlFlag.None;
+        Agent.MovementControlFlag thrust = Agent.MovementControlFlag.None;
         if (mainIndex >= 0 && (offhandUsage.Length == 0 || offhandIndex >= 0))
         {
             for (int direction = 0; direction < 4; direction++)
@@ -1503,11 +1684,15 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     swing |= flag;
                 }
+                else if (normalLook == (int)StrikeType.Thrust && lowLook == (int)StrikeType.Thrust)
+                {
+                    thrust |= flag;
+                }
             }
         }
 
-        _meleeDirections[key] = (result, swing);
-        return (result, swing);
+        _meleeDirections[key] = (result, swing, thrust);
+        return (result, swing, thrust);
     }
 
     private static Agent.MovementControlFlag PreferredMeleeSide(Vec3 position, Vec3 target, Vec2 look, bool leftStance)
@@ -1570,14 +1755,53 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         double now = Mission.CurrentTime;
         AdimiToolsAiArenaKickPunish? punish = bot.GetComponent<AdimiToolsAiArenaKickPunish>();
         bool counterApproach = target.MountAgent == null && AdimiToolsAiArenaAgentStatModel.KickDesire > 0f
-            && punish?.WantsCounterKick(target.Index) == true
+            && (punish?.WantsCounterApproach(target.Index) == true || punish?.WantsCounterKick(target.Index) == true)
             && !HasIncomingMeleeThreat(bot, bot.GetComponent<AdimiToolsAiArenaParryCounter>(), now);
 
         Agent spacingTarget = target;
         Vec3 targetPosition = spacingTarget.Position;
+        bool observedKick = target.MountAgent == null && AdimiToolsAiArenaAgentStatModel.KickDesire > 0f
+            && arena.KickAssignments.TryGetAssigned(target.Index, out int assignedBot) && assignedBot == bot.Index
+            && punish?.WantsTrackActiveKick(target.Index) == true
+            && target.GetCurrentActionType(0) != Agent.ActionCodeType.KickHit
+            && target.GetCurrentActionType(1) != Agent.ActionCodeType.KickHit;
+        if (observedKick && HasIncomingMeleeThreat(bot, bot.GetComponent<AdimiToolsAiArenaParryCounter>(), now, target))
+        {
+            // Only the selected player's kick is excluded here. A release by
+            // that player, or any other nearby attack, takes priority.
+            footwork.Suspend();
+            return;
+        }
+
+        Vec2 currentDelta = targetPosition.AsVec2 - position.AsVec2;
+        float currentDistanceSquared = currentDelta.LengthSquared;
+        bool currentGeometryValid = position.IsValid && targetPosition.IsValid && float.IsFinite(currentDistanceSquared)
+            && currentDistanceSquared >= 0.0001f && Math.Abs(position.z - targetPosition.z) <= 0.8f;
+        float currentDistance = currentGeometryValid ? System.MathF.Sqrt(currentDistanceSquared) : 0f;
+        Vec2 currentDirection = currentGeometryValid ? currentDelta * (1f / currentDistance) : default;
+        Vec2 targetVelocity = default;
+        bool velocityValid = false;
+        if ((observedKick || counterApproach) && currentGeometryValid)
+        {
+            Vec3 velocity = target.GetRealGlobalVelocity();
+            targetVelocity = velocity.AsVec2;
+            float speedSquared = targetVelocity.LengthSquared;
+            // A non-finite or implausibly large native sample is not useful
+            // for prediction. Confirmed pursuit can still use the real position.
+            velocityValid = float.IsFinite(targetVelocity.x) && float.IsFinite(targetVelocity.y)
+                && float.IsFinite(speedSquared) && speedSquared <= 64f;
+        }
+
+        Vec2 currentRight = new(currentDirection.y, -currentDirection.x);
+        float awaySpeed = velocityValid ? targetVelocity.x * currentDirection.x + targetVelocity.y * currentDirection.y : 0f;
+        float sideSpeed = velocityValid ? targetVelocity.x * currentRight.x + targetVelocity.y * currentRight.y : 0f;
+        // This is only reversible positioning while a kick is unresolved,
+        // never evidence of a miss. Close or approaching kicks keep normal evasion.
+        bool trackWhileKicking = observedKick && currentGeometryValid && velocityValid && awaySpeed >= -0.35f
+            && (currentDistance >= 2.15f || (currentDistance > 1.25f && (awaySpeed > 0.35f || Math.Abs(sideSpeed) > 0.25f)));
         // In group fights keep spacing from the nearest opponent rather than
         // walking past one player just to reach the currently selected target.
-        if (!counterApproach && position.IsValid && targetPosition.IsValid && _backSwingAttackers.Count > 1)
+        if (!counterApproach && !trackWhileKicking && position.IsValid && targetPosition.IsValid && _backSwingAttackers.Count > 1)
         {
             // Start from the prior live spacing reference, not the combat
             // target on every tick. The same distance margin then applies in
@@ -1619,7 +1843,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
         }
 
-        if (!counterApproach)
+        if (!counterApproach && !trackWhileKicking)
         {
             footwork.RememberSpacingTarget(spacingTarget.Index);
         }
@@ -1635,7 +1859,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         float distance = System.MathF.Sqrt(distanceSquared);
         Vec2 towardTarget = delta * (1f / distance);
-        bool incomingKick = distance <= 1.8f
+        if ((counterApproach || trackWhileKicking) && velocityValid && ReferenceEquals(spacingTarget, target))
+        {
+            // Lead the player's current movement briefly, with a small cap;
+            // every new mission sample replaces this guess with real position.
+            Vec2 lead = targetVelocity * 0.12f;
+            float leadLengthSquared = lead.LengthSquared;
+            if (leadLengthSquared > 0.30f * 0.30f)
+            {
+                lead *= 0.30f / System.MathF.Sqrt(leadLengthSquared);
+            }
+
+            Vec2 predictedDelta = delta + lead;
+            float predictedLengthSquared = predictedDelta.LengthSquared;
+            if (float.IsFinite(predictedLengthSquared) && predictedLengthSquared >= 0.0001f)
+            {
+                towardTarget = predictedDelta * (1f / System.MathF.Sqrt(predictedLengthSquared));
+            }
+        }
+
+        bool incomingKick = distance <= 1.8f && !_kickMissRecoveryAttackers.Contains(spacingTarget)
             && (IsFootworkKick(spacingTarget.GetCurrentActionType(0)) || IsFootworkKick(spacingTarget.GetCurrentActionType(1))
                 || arena.KickAssignments.IsKickOngoing(spacingTarget.Index));
         float toward;
@@ -1653,8 +1896,30 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 return;
             }
 
-            toward = arena.Difficulty switch { 1 => 0.52f, 2 => 0.62f, _ => 0.72f };
+            toward = arena.Difficulty switch { 1 => 0.75f, 2 => 0.85f, _ => 1f };
             lateral = 0f;
+        }
+        else if (trackWhileKicking)
+        {
+            if (!footwork.MayStartCounterApproach(now))
+            {
+                return;
+            }
+
+            if (distance >= 2.15f)
+            {
+                toward = arena.Difficulty switch { 1 => 0.65f, 2 => 0.75f, _ => 0.85f };
+                lateral = 0f;
+            }
+            else
+            {
+                // Nearby, keep the kick response mostly lateral; only a
+                // clearly retreating target outside 1.85m gets a small close.
+                toward = distance > 1.85f && awaySpeed > 0.4f ? 0.30f : 0f;
+                float side = Math.Abs(sideSpeed) > 0.25f ? Math.Sign(sideSpeed)
+                    : ((bot.Index ^ target.Index) & 1) == 0 ? 1f : -1f;
+                lateral = side * Math.Clamp(Math.Abs(sideSpeed) * 0.35f, 0.35f, 0.65f);
+            }
         }
         else if (!footwork.TryPlan(now, bot.Index, spacingTarget.Index, distance, usage.GetRealWeaponLength(),
                      out toward, out lateral, incomingKick, arena.Difficulty))
@@ -1673,10 +1938,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         bodyForward = bodyForward.Normalized();
         viewForward = viewForward.Normalized();
-        // Agent.Frame and LookDirection can lag native's logical input angle.
-        // When they disagree or the bot is turning away, leave movement to it.
-        if (bodyForward.x * viewForward.x + bodyForward.y * viewForward.y < 0.94f
-            || bodyForward.x * towardTarget.x + bodyForward.y * towardTarget.y < 0.5f)
+        // Keep the tracking allowance inside the 25-degree boundary safety
+        // cone; ordinary footwork retains the stricter view/body agreement.
+        float minimumBodyViewDot = counterApproach || trackWhileKicking ? 0.91f : 0.94f;
+        if (bodyForward.x * viewForward.x + bodyForward.y * viewForward.y < minimumBodyViewDot
+            || bodyForward.x * towardTarget.x + bodyForward.y * towardTarget.y < (counterApproach || trackWhileKicking ? 0.1f : 0.5f))
         {
             footwork.Suspend();
             return;
@@ -1696,7 +1962,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         // short weapons and reject every otherwise safe closing step. Check a
         // bounded nearer segment while closing; the snapshot and safety check
         // remain short-lived and Native still owns the final collision.
-        float checkDistance = counterApproach ? Math.Clamp(distance - 1f, 0.2f, 0.8f)
+        float checkDistance = trackWhileKicking ? (toward > 0f ? Math.Clamp(distance - 1.8f, 0.2f, 0.6f) : 0.35f)
+            : counterApproach ? Math.Clamp(distance - 1f, 0.2f, 0.8f)
             : toward > 0f ? Math.Clamp(distance - 0.8f, 0.35f, 1f) : 1f;
         if (footwork.NeedsSafetyCheck(now, spacingTarget.Index, direction.x, direction.y, checkDistance))
         {
@@ -1828,6 +2095,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (bot.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.OwnsAttackInput == true
+            || bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.HasPendingOrControl == true
+            || bot.GetComponent<AdimiToolsAiArenaLightning>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaParryCounter>()?.HasPendingOrControl == true
             || bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.HasPendingOrControl == true)
@@ -1884,6 +2153,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     bot.GetComponent<AdimiToolsAiArenaKick>()?.Clear();
                     bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
                     bot.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
+                    bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.Clear();
+                    bot.GetComponent<AdimiToolsAiArenaLightning>()?.Clear();
                     bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
                     bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
                 }
@@ -2432,7 +2703,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     || (arena.Session.State == AdimiToolsAiArenaState.CountingDown && owner.Team != arena.OriginalTeam)
                     || (arena.Session.State == AdimiToolsAiArenaState.Running && owner.Team != arena.PlayerTeam))
                 {
-                    ResetArena(arena, "AI 挑战已结束，区域恢复开放。");
+                    ResetArena(arena, MessageText("AI 挑战已结束，区域恢复开放。", "The AI challenge has ended. The arena is open again."));
                     continue;
                 }
 
@@ -2446,11 +2717,11 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     {
                         arena.RoundPending = true;
                         arena.Series.ForfeitPlayer();
-                        ResetArena(arena, "你已离开训练区域，整场挑战判负，AI 获胜。区域恢复开放。");
+                        ResetArena(arena, MessageText("你已离开训练区域，整场挑战判负，AI 获胜。区域恢复开放。", "You left the training area and forfeited the challenge. The AI wins; the arena is open again."));
                     }
                     else
                     {
-                        ResetArena(arena, "挑战开始前离开训练区域，本次 AI 挑战已取消。");
+                        ResetArena(arena, MessageText("挑战开始前离开训练区域，本次 AI 挑战已取消。", "You left the training area before the challenge began. The challenge was cancelled."));
                     }
 
                     continue;
@@ -2460,7 +2731,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 {
                     arena.RoundPending = true;
                     arena.Series?.ForfeitPlayer();
-                    ResetArena(arena, "你已连续 5 秒脱离 AI 索敌范围，本次挑战自动判负。");
+                    ResetArena(arena, MessageText("你已连续 5 秒脱离 AI 索敌范围，本次挑战自动判负。", "You were out of the AI's detection range for 5 seconds and forfeited the challenge."));
                     continue;
                 }
 
@@ -2472,7 +2743,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                         {
                             if (now > arena.RespawnDeadline)
                             {
-                                ResetArena(arena, "等待复活超时，本次 AI 系列已取消。");
+                                ResetArena(arena, MessageText("等待复活超时，本次 AI 系列已取消。", "Respawn timed out. The AI series was cancelled."));
                             }
 
                             continue;
@@ -2480,7 +2751,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
                         if (!IsLivingAgent(ownerAgent) || !ReferenceEquals(owner.ControlledAgent, ownerAgent))
                         {
-                            ResetArena(arena, "玩家状态发生变化，本次 AI 系列已取消。");
+                            ResetArena(arena, MessageText("玩家状态发生变化，本次 AI 系列已取消。", "The player's state changed. The AI series was cancelled."));
                             continue;
                         }
 
@@ -2508,7 +2779,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
                 if (!IsLivingAgent(ownerAgent) || !ReferenceEquals(owner.ControlledAgent, ownerAgent))
                 {
-                    ResetArena(arena, "AI 挑战已结束，区域恢复开放。");
+                    ResetArena(arena, MessageText("AI 挑战已结束，区域恢复开放。", "The AI challenge has ended. The arena is open again."));
                     continue;
                 }
 
@@ -2537,7 +2808,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
                     if (arena.Area != null && !EvictOtherPlayers(arena, owner, new[] { ownerAgent }))
                     {
-                        ResetArena(arena, "战斗附近存在无法遣返的玩家，本次挑战已取消。");
+                        ResetArena(arena, MessageText("战斗附近存在无法遣返的玩家，本次挑战已取消。", "A nearby player could not be moved away. The challenge was cancelled."));
                         continue;
                     }
 
@@ -2560,6 +2831,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             try
             {
                 attacker.GetComponent<AdimiToolsAiArenaAttackTactics>()?.NotifyAttackBlocked();
+                attacker.GetComponent<AdimiToolsAiArenaLightning>()?.NotifyAttackBlocked();
             }
             catch (Exception)
             { /* The original hit processing must continue. */
@@ -2634,6 +2906,10 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             try
             {
+                // A real hit immediately withdraws any pending feint input;
+                // future feint counts remain unchanged.
+                victim.GetComponent<AdimiToolsAiArenaParryFeint>()?.Cancel(Mission.CurrentTime, dueToThreat: true);
+                victim.GetComponent<AdimiToolsAiArenaLightning>()?.Suspend();
                 // Withdraw a pending kick-and-slash even when a different
                 // opponent or a ranged hit caused the damage this frame.
                 victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
@@ -2660,62 +2936,51 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
         }
 
-        // Only an actual blocked hostile melee blow opens a parry counter.
-        // Merely holding a guard, chamber attacks, kicks and ranged hits do not.
-        if (!_ending && !_sceneClearing && isBlocked && attacker != null && !isSiegeEngineHit
-            && !collisionData.IsMissile && !collisionData.IsAlternativeAttack && !collisionData.CollidedWithShieldOnBack
-            && (collisionData.CollisionResult is CombatCollisionResult.Blocked or CombatCollisionResult.Parried)
-            && attackerWeapon?.IsMeleeWeapon == true && IsLivingAgent(victim) && IsLivingAgent(attacker))
+        // Native may report this block via OnAgentHitBlocked/OnScoreHit as
+        // well as OnMeleeHit. Both routes share one idempotent recorder.
+        if (isBlocked && attacker != null && !isSiegeEngineHit)
         {
-            foreach (Arena arena in _arenas.Values)
-            {
-                bool validAttacker = attacker.Team == arena.PlayerTeam && victim.Team == arena.BotTeam
-                    && arena.PlayerTeam != arena.BotTeam
-                    && ((ReferenceEquals(arena.OwnerAgent, attacker) && !arena.OwnerWithdrew)
-                        || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, attacker) && !member.Died && !member.Withdrew));
-                if (arena.Resetting || arena.RoundPending || arena.Session.State != AdimiToolsAiArenaState.Running
-                    || arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena))
-                    || !arena.Bots.Contains(victim) || !validAttacker
-                    || arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
-                    || victim.MountAgent != null)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    MissionWeapon defenderWeapon = victim.WieldedWeapon;
-                    WeaponComponentData? defenderUsage = defenderWeapon.IsEmpty ? null : defenderWeapon.CurrentUsageItem;
-                    if (defenderUsage?.IsMeleeWeapon != true || defenderUsage.IsRangedWeapon)
-                    {
-                        break;
-                    }
-
-                    victim.GetComponent<AdimiToolsAiArenaBackSwingGuard>()?.Suspend();
-                    victim.GetComponent<AdimiToolsAiArenaReadGuard>()?.Suspend();
-                    victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
-                    victim.GetComponent<AdimiToolsAiArenaKick>()?.Suspend();
-                    victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
-                    victim.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
-                    victim.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Suspend();
-                    victim.GetComponent<AdimiToolsAiArenaLearnedAttack>()?.Clear();
-                    victim.GetComponent<AdimiToolsAiArenaParryCounter>()?.RecordParry(Mission.CurrentTime, attacker.Index, blow.DefenderStunPeriod);
-                    if (arena.IsCoop)
-                    {
-                        arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
-                    }
-                }
-                catch (Exception)
-                { /* Native combat and score processing remain authoritative. */
-                }
-
-                break;
-            }
+            RecordMeleeParry(victim, attacker, attackerWeapon, in collisionData, blow.DefenderStunPeriod, collisionSource: 2);
         }
 
         if (_ending || isBlocked || !float.IsFinite(damagedHp) || damagedHp <= 0f || attacker == null)
         {
             return;
+        }
+
+        if (!isSiegeEngineHit && !collisionData.IsMissile && !collisionData.IsAlternativeAttack
+            && !collisionData.AttackBlockedWithShield && !collisionData.CollidedWithShieldOnBack
+            && attackerWeapon?.IsMeleeWeapon == true && !attackerWeapon.IsRangedWeapon)
+        {
+            try
+            {
+                // A confirmed first melee hit can open the optional
+                // follow-up sooner; Native still owns its execution.
+                foreach (Arena arena in _arenas.Values)
+                {
+                    bool participant = (ReferenceEquals(arena.OwnerAgent, victim) && !arena.OwnerWithdrew)
+                        || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, victim) && !member.Died && !member.Withdrew);
+                    if (!arena.Resetting && !arena.RoundPending && arena.Session.State == AdimiToolsAiArenaState.Running
+                        && arena.Bots.Contains(attacker) && participant && attacker.Team == arena.BotTeam
+                        && victim.Team == arena.PlayerTeam && arena.BotTeam != arena.PlayerTeam)
+                    {
+                        if (attacker.GetCurrentActionType(1) == Agent.ActionCodeType.ReleaseMelee
+                            && attacker.GetCurrentActionStage(1) == Agent.ActionStage.AttackRelease)
+                        {
+                            MissionWeapon activeWeapon = attacker.WieldedWeapon;
+                            MissionWeapon activeOffhand = attacker.WieldedOffhandWeapon;
+                            attacker.GetComponent<AdimiToolsAiArenaLightning>()?.NotifyFirstHit(Mission.CurrentTime, victim.Index,
+                                activeWeapon.IsEmpty ? null : activeWeapon.Item, arena.Difficulty,
+                                attacker.GetCurrentActionDirection(1), confirmedMeleeDamage: true,
+                                offhandKey: activeOffhand.IsEmpty ? null : activeOffhand.Item);
+                        }
+                        break;
+                    }
+                }
+            }
+            catch (Exception)
+            { /* Native damage processing remains authoritative. */
+            }
         }
 
         foreach (Arena arena in _arenas.Values)
@@ -2760,26 +3025,51 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
     }
 
     // The ordinary OnScoreHit route can omit a zero-inflicted-damage blow.
-    // Native still dispatches this melee collision after RegisterBlow for a
-    // body hit. Only cover that missing path here: positive-damage and blocked
-    // contacts remain handled by OnScoreHit, avoiding duplicate notifications.
+    // Native can dispatch a zero-damage body or blocked melee collision here
+    // even when its ordinary score callback is absent. Kick notifications are
+    // idempotent when both paths report the same contact.
     public override void OnMeleeHit(Agent attacker, Agent victim, bool isCanceled, AttackCollisionData collisionData)
     {
         if (_ending || _sceneClearing || attacker == null || victim == null || collisionData.IsMissile
             || collisionData.InflictedDamage != 0
-            || collisionData.CollisionResult != CombatCollisionResult.StrikeAgent)
+            || collisionData.CollisionResult is not (CombatCollisionResult.StrikeAgent or CombatCollisionResult.Blocked
+                or CombatCollisionResult.Parried or CombatCollisionResult.ChamberBlocked))
         {
             return;
         }
 
         try
         {
-            // A zero-damage body collision can still interrupt a ready attack.
-            // Withdraw a previously published initiative immediately rather
-            // than waiting for the next mission-thread animation sample.
-            if (!isCanceled && !collisionData.AttackBlockedWithShield && !collisionData.CollidedWithShieldOnBack)
+            // A zero-damage body collision can still interrupt an action.
+            // Withdraw offensive snapshots before recording this contact,
+            // including a counter aimed at a different co-op opponent.
+            if (collisionData.CollisionResult == CombatCollisionResult.StrikeAgent && !isCanceled
+                && !collisionData.AttackBlockedWithShield && !collisionData.CollidedWithShieldOnBack)
             {
+                victim.GetComponent<AdimiToolsAiArenaParryFeint>()?.Cancel(Mission.CurrentTime, dueToThreat: true);
+                victim.GetComponent<AdimiToolsAiArenaLightning>()?.Suspend();
                 victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
+                victim.GetComponent<AdimiToolsAiArenaKick>()?.Suspend();
+            }
+
+            // Native's isCanceled is also true for an ordinary weapon block,
+            // because that collision cancels damage. Validate the actual
+            // collision type and the attacker's recorded weapon slot instead.
+            if (!collisionData.IsAlternativeAttack
+                && collisionData.CollisionResult is CombatCollisionResult.Blocked or CombatCollisionResult.Parried)
+            {
+                // Native may report a blocked AI swing here without a score
+                // callback. Do not let ordinary combo tactics reuse it as a hit.
+                attacker.GetComponent<AdimiToolsAiArenaAttackTactics>()?.NotifyAttackBlocked();
+                attacker.GetComponent<AdimiToolsAiArenaLightning>()?.NotifyAttackBlocked();
+                int weaponSlot = collisionData.AffectorWeaponSlotOrMissileIndex;
+                if (weaponSlot >= 0 && weaponSlot < (int)EquipmentIndex.NumAllWeaponSlots)
+                {
+                    MissionWeapon attackWeapon = attacker.Equipment[(EquipmentIndex)weaponSlot];
+                    WeaponComponentData? attackUsage = attackWeapon.IsEmpty ? null : attackWeapon.CurrentUsageItem;
+                    RecordMeleeParry(victim, attacker, attackUsage, in collisionData, collisionData.DefenderStunPeriod, collisionSource: 1);
+                }
             }
 
             if (!collisionData.IsAlternativeAttack)
@@ -2796,11 +3086,109 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 return;
             }
 
-            bool blocked = isCanceled || collisionData.AttackBlockedWithShield || collisionData.CollidedWithShieldOnBack;
+            bool blocked = isCanceled || collisionData.CollisionResult != CombatCollisionResult.StrikeAgent
+                || collisionData.AttackBlockedWithShield || collisionData.CollidedWithShieldOnBack;
             NotifyKickContact(victim, attacker, blocked);
         }
         catch (Exception)
         { /* Native combat and hit processing remain authoritative. */
+        }
+    }
+
+    // Capture only a genuine hostile melee block in a live AI arena. Native
+    // owns the result, stun and action transitions. OnScoreHit and OnMeleeHit
+    // can report the same collision in either order; no other component may
+    // be withdrawn unless the parry controller accepts a new event.
+    private void RecordMeleeParry(Agent victim, Agent attacker, WeaponComponentData? attackUsage,
+        in AttackCollisionData collisionData, float defenderStunSeconds, byte collisionSource)
+    {
+        if (_ending || _sceneClearing || victim == null || attacker == null
+            || collisionData.IsMissile || collisionData.IsAlternativeAttack || collisionData.CollidedWithShieldOnBack
+            || collisionData.CollisionResult is not (CombatCollisionResult.Blocked or CombatCollisionResult.Parried)
+            || attackUsage?.IsMeleeWeapon != true || attackUsage.IsRangedWeapon)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!victim.IsHuman || !attacker.IsHuman || !IsLivingAgent(victim) || !IsLivingAgent(attacker)
+                || victim.CurrentMortalityState == Agent.MortalityState.Invulnerable)
+            {
+                return;
+            }
+
+            foreach (Arena arena in _arenas.Values)
+            {
+                bool validAttacker = attacker.Team == arena.PlayerTeam && victim.Team == arena.BotTeam
+                    && arena.PlayerTeam != null && arena.BotTeam != null && arena.PlayerTeam != arena.BotTeam
+                    && arena.PlayerTeam.IsEnemyOf(arena.BotTeam)
+                    && ((ReferenceEquals(arena.OwnerAgent, attacker) && !arena.OwnerWithdrew)
+                        || arena.CoopMembers.Any(member => ReferenceEquals(member.Agent, attacker) && !member.Died && !member.Withdrew));
+                if (arena.Resetting || arena.RoundPending || arena.Session.State != AdimiToolsAiArenaState.Running
+                    || arena.DuelBoundary?.IsOwnedByOther(arena) == true || (arena.Shared != null && !arena.Shared.Owns(arena))
+                    || !arena.Bots.Contains(victim) || !validAttacker
+                    || arena.Kind is not (AdimiToolsAiArenaKind.Original or AdimiToolsAiArenaKind.Spear)
+                    || victim.MountAgent != null)
+                {
+                    continue;
+                }
+
+                MissionWeapon defenderWeapon = victim.WieldedWeapon;
+                WeaponComponentData? defenderUsage = defenderWeapon.IsEmpty ? null : defenderWeapon.CurrentUsageItem;
+                AdimiToolsAiArenaParryCounter? parry = victim.GetComponent<AdimiToolsAiArenaParryCounter>();
+                if (defenderUsage?.IsMeleeWeapon != true || defenderUsage.IsRangedWeapon || parry == null
+                    || !parry.RecordParry(Mission.CurrentTime, attacker.Index, defenderStunSeconds,
+                        allowFeint: arena.Difficulty == AdimiToolsAiArenaDifficulty.Hard && !collisionData.AttackBlockedWithShield,
+                        collisionSignature: MeleeParryCollisionSignature(in collisionData), collisionSource: collisionSource))
+                {
+                    break;
+                }
+
+                victim.GetComponent<AdimiToolsAiArenaParryFeint>()?.Cancel(Mission.CurrentTime, dueToThreat: true);
+                victim.GetComponent<AdimiToolsAiArenaLightning>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaBackSwingGuard>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaReadGuard>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaAttackInitiative>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaKick>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
+                victim.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
+                victim.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Suspend();
+                victim.GetComponent<AdimiToolsAiArenaLearnedAttack>()?.Clear();
+                if (arena.IsCoop)
+                {
+                    arena.RecentBotHits[victim] = (attacker, Mission.CurrentTime);
+                }
+
+                break;
+            }
+        }
+        catch (Exception)
+        { /* Native combat and score processing remain authoritative. */
+        }
+    }
+
+    // No engine event ID is exposed here. Use the exact reported collision
+    // fields only to identify a short-lived duplicate across the two callbacks;
+    // the parry controller still treats this as a bounded approximation.
+    private static ulong MeleeParryCollisionSignature(in AttackCollisionData collisionData)
+    {
+        unchecked
+        {
+            const ulong prime = 1099511628211UL;
+            ulong hash = 14695981039346656037UL;
+            hash = (hash ^ (uint)(int)collisionData.CollisionResult) * prime;
+            hash = (hash ^ (collisionData.AttackBlockedWithShield ? 1u : 0u)) * prime;
+            hash = (hash ^ (uint)collisionData.AffectorWeaponSlotOrMissileIndex) * prime;
+            hash = (hash ^ (uint)(int)collisionData.AttackDirection) * prime;
+            hash = (hash ^ (uint)collisionData.StrikeType) * prime;
+            hash = (hash ^ (uint)BitConverter.SingleToInt32Bits(collisionData.AttackProgress)) * prime;
+            hash = (hash ^ (uint)BitConverter.SingleToInt32Bits(collisionData.CollisionDistanceOnWeapon)) * prime;
+            Vec3 position = collisionData.CollisionGlobalPosition;
+            hash = (hash ^ (uint)BitConverter.SingleToInt32Bits(position.x)) * prime;
+            hash = (hash ^ (uint)BitConverter.SingleToInt32Bits(position.y)) * prime;
+            hash = (hash ^ (uint)BitConverter.SingleToInt32Bits(position.z)) * prime;
+            return hash == 0UL ? 1UL : hash;
         }
     }
 
@@ -2827,7 +3215,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 foreach (Agent bot in arena.Bots)
                 {
                     AdimiToolsAiArenaKickPunish? punish = bot.GetComponent<AdimiToolsAiArenaKickPunish>();
-                    bool wasApproaching = punish?.WantsCounterKick(attacker.Index) == true;
+                    bool wasApproaching = punish?.HasObservedActiveKick(attacker.Index) == true
+                        || punish?.WantsCounterApproach(attacker.Index) == true
+                        || punish?.WantsCounterKick(attacker.Index) == true;
                     punish?.NotifyEnemyKickContact(Mission.CurrentTime, attacker.Index);
                     bot.GetComponent<AdimiToolsAiArenaKick>()?.CancelCounterOpportunity(attacker.Index);
                     if (wasApproaching || ReferenceEquals(bot, victim))
@@ -2836,12 +3226,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     }
                 }
             }
-            else if (attackerBot && victimPlayer && !isBlocked && attacker.MountAgent == null && victim.MountAgent == null)
+            else if (attackerBot && attacker.MountAgent == null)
             {
                 double now = Mission.CurrentTime;
-                if (attacker.GetComponent<AdimiToolsAiArenaKickPunish>()?.NotifyOwnKickContact(now, victim.Index) == true)
+                bool canFollow = victimPlayer && !isBlocked && IsLivingAgent(attacker) && IsLivingAgent(victim)
+                    && attacker.Team == arena.BotTeam && victim.Team == arena.PlayerTeam && arena.BotTeam != arena.PlayerTeam
+                    && victim.MountAgent == null;
+                AdimiToolsAiArenaKickPunish? punish = attacker.GetComponent<AdimiToolsAiArenaKickPunish>();
+                int originalTarget = -1;
+                AdimiToolsAiArenaKickPunish.OwnKickContactResult contact = punish?.NotifyOwnKickCollision(now, victim.Index,
+                    canFollow, out originalTarget) ?? AdimiToolsAiArenaKickPunish.OwnKickContactResult.None;
+                if (contact != AdimiToolsAiArenaKickPunish.OwnKickContactResult.None)
                 {
-                    attacker.GetComponent<AdimiToolsAiArenaKick>()?.NotifyCounterKickContact(now, victim.Index);
+                    // A confirmed contact invalidates a previously published
+                    // missed-kick guard before the next mission sample.
+                    attacker.GetComponent<AdimiToolsAiArenaReadGuard>()?.Suspend();
+                    attacker.GetComponent<AdimiToolsAiArenaKick>()?.NotifyCounterKickContact(now, originalTarget);
                 }
             }
         }
@@ -2867,6 +3267,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             affectedAgent.GetComponent<AdimiToolsAiArenaKick>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
+            affectedAgent.GetComponent<AdimiToolsAiArenaParryFeint>()?.Clear();
+            affectedAgent.GetComponent<AdimiToolsAiArenaLightning>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
             affectedAgent.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
         }
@@ -3178,6 +3580,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             buildData.MountKey(mountKey);
         }
     }
+
+    private static string MessageText(string chinese, string english) => AdimiToolsMessageLanguage.Select(chinese, english);
 
     private static void Notify(MissionPeer peer, string message, bool ordinaryChat = false)
     {
@@ -4037,7 +4441,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
             else
             {
-                ResetArena(arena, "已无玩家能够继续战斗，本次组队 AI 挑战已取消。");
+                ResetArena(arena, MessageText("已无玩家能够继续战斗，本次组队 AI 挑战已取消。", "No players can continue. The co-op AI challenge was cancelled."));
             }
 
             return;
@@ -4051,7 +4455,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (!EvictOtherPlayers(arena, owner, fighters))
         {
-            ResetArena(arena, "战斗附近存在无法遣返的玩家，本次挑战已取消。");
+            ResetArena(arena, MessageText("战斗附近存在无法遣返的玩家，本次挑战已取消。", "A nearby player could not be moved away. The challenge was cancelled."));
             return;
         }
 
@@ -4088,6 +4492,26 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                     .ThenByDescending(agent => ReferenceEquals(agent, recentAttacker))
                     .ThenBy(agent => bot.Position.DistanceSquared(agent.Position))
                     .First();
+
+                // Within the same allocation/retaliation priority, retain a
+                // live arena opponent across small distance fluctuations.
+                // Otherwise the combat target can alternate on each update even
+                // while the separate footwork reference remains stable.
+                Agent? previous = bot.GetTargetAgent();
+                if (previous != null && !ReferenceEquals(previous, target)
+                    && assigned.TryGetValue(previous, out int previousAssignments)
+                    && previousAssignments == assigned[target]
+                    && (!ReferenceEquals(target, recentAttacker) || ReferenceEquals(previous, recentAttacker)))
+                {
+                    float previousDistance = bot.Position.DistanceSquared(previous.Position);
+                    float targetDistance = bot.Position.DistanceSquared(target.Position);
+                    if (float.IsFinite(previousDistance) && float.IsFinite(targetDistance)
+                        && previousDistance <= targetDistance + 0.25f)
+                    {
+                        target = previous;
+                    }
+                }
+
                 bot.SetTargetAgent(target);
                 assigned[target]++;
             }
@@ -4125,7 +4549,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (arena.Equipment == null)
         {
-            ResetArena(arena, "AI 装备数据缺失，本次挑战已取消。");
+            ResetArena(arena, MessageText("AI 装备数据缺失，本次挑战已取消。", "AI equipment data is missing. The challenge was cancelled."));
             return;
         }
 
@@ -4148,7 +4572,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         arena.BotLoadouts = loadouts;
         if (!PrepareSpawnPositions(arena))
         {
-            ResetArena(arena, "AI 出生点附近没有足够的可用导航网格，请调整地图后重试。");
+            ResetArena(arena, MessageText("AI 出生点附近没有足够的可用导航网格，请调整地图后重试。", "There is not enough navigable ground near the AI spawn. Adjust the map and try again."));
             return;
         }
 
@@ -4211,20 +4635,22 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         SpawnRoundBots(arena, ownerAgent);
         BeginLearning(arena, owner, ownerAgent);
         _duelMode?.BeginAiChallengeDisplay(arena.Id, owner, ownerAgent, arena.StartedAiCount, arena.Difficulty,
-            arena.SpearCandidates != null ? "持矛步兵" : arena.CavalryProfile?.TroopName ?? arena.RangedProfile?.TroopName ?? arena.HardProfile?.TroopName);
+            arena.SpearCandidates != null ? MessageText("持矛步兵", "Spear Infantry") : arena.CavalryProfile?.TroopName ?? arena.RangedProfile?.TroopName ?? arena.HardProfile?.TroopName);
         string opponents = arena.Kind switch
         {
-            AdimiToolsAiArenaKind.Spear => "持矛步兵",
-            AdimiToolsAiArenaKind.Archer => arena.Difficulty == AdimiToolsAiArenaDifficulty.Hard ? "困难射手" : "顶级射手",
-            AdimiToolsAiArenaKind.HorseArcher => "骑射手",
-            AdimiToolsAiArenaKind.Cavalry => "困难骑兵",
+            AdimiToolsAiArenaKind.Spear => MessageText("持矛步兵", "spear infantry"),
+            AdimiToolsAiArenaKind.Archer => arena.Difficulty == AdimiToolsAiArenaDifficulty.Hard
+                ? MessageText("困难射手", "hard archer") : MessageText("顶级射手", "elite archer"),
+            AdimiToolsAiArenaKind.HorseArcher => MessageText("骑射手", "horse archer"),
+            AdimiToolsAiArenaKind.Cavalry => MessageText("困难骑兵", "hard cavalry"),
             _ => AdimiToolsAiArenaDifficulty.GetName(arena.Difficulty) + " AI",
         };
         if (arena.IsCoop)
         {
             Agent[] fighters = arena.CoopMembers.Select(member => member.Agent).Prepend(ownerAgent).ToArray();
             UpdateBotTargets(arena, ownerAgent, fighters);
-            string message = $"已生成 {arena.Bots.Count} 个{opponents}，{fighters.Length} 人组队挑战开始，一局定胜负。";
+            string message = MessageText($"已生成 {arena.Bots.Count} 个{opponents}，{fighters.Length} 人组队挑战开始，一局定胜负。",
+                $"Spawned {arena.Bots.Count} × {opponents}. {fighters.Length} players begin a one-round co-op challenge.");
             Notify(owner, message);
             foreach (CoopMember member in arena.CoopMembers)
             {
@@ -4234,7 +4660,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
         else
         {
-            Notify(owner, $"已生成 {arena.Bots.Count} 个{opponents}，只会与你交战。本次{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}。");
+            Notify(owner, MessageText($"已生成 {arena.Bots.Count} 个{opponents}，只会与你交战。本次{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}。",
+                $"Spawned {arena.Bots.Count} × {opponents} to fight you. Format: {AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}."));
         }
     }
 
@@ -4379,6 +4806,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             bot.GetComponent<AdimiToolsAiArenaKick>()?.Clear();
             bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
             bot.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
+            bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.ResetEpisode();
+            bot.GetComponent<AdimiToolsAiArenaLightning>()?.Clear();
             bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
             bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
         }
@@ -4389,8 +4818,9 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         if (finished)
         {
             string? resultMessage = arena.Series.WinnerPlayer == true ? null
-                : arena.IsCoop ? "组队 AI 挑战结束：玩家全部阵亡，AI 获胜。"
-                : $"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，AI 获胜。";
+                : arena.IsCoop ? MessageText("组队 AI 挑战结束：玩家全部阵亡，AI 获胜。", "Co-op AI challenge over: all players fell. The AI wins.")
+                : MessageText($"AI 系列结束：你 {arena.Series.PlayerWins}:{arena.Series.AiWins} AI，AI 获胜。",
+                    $"AI series over: You {arena.Series.PlayerWins}:{arena.Series.AiWins} AI. The AI wins.");
             ResetArena(arena, resultMessage);
             return;
         }
@@ -4417,11 +4847,13 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
 
         if (!PreparePlayerRespawnFrame(arena))
         {
-            ResetArena(arena, "AI 出生点附近没有可用复活位置，本系列已取消。");
+            ResetArena(arena, MessageText("AI 出生点附近没有可用复活位置，本系列已取消。", "No suitable respawn point was found near the AI spawn. The series was cancelled."));
             return;
         }
 
-        Notify(arena.Session.Owner!, $"当前比分 {arena.Series.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。{(arena.Bots.Count > 0 ? "存活 AI 保留" : "双方阵亡")}，复活后继续本系列。");
+        Notify(arena.Session.Owner!, MessageText(
+            $"当前比分 {arena.Series.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。{(arena.Bots.Count > 0 ? "存活 AI 保留" : "双方阵亡")}，复活后继续本系列。",
+            $"Score {arena.Series.PlayerWins}:{arena.Series.AiWins} ({AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}). {(arena.Bots.Count > 0 ? "Surviving AI remain" : "Both sides fell")}; the series continues after respawn."));
     }
 
     private void PrepareRoundSurvivors(Arena arena)
@@ -4502,7 +4934,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         {
             if (!PrepareSpawnPositions(arena))
             {
-                ResetArena(arena, "下一局缺少可用 AI 出生位置，本系列已取消。");
+                ResetArena(arena, MessageText("下一局缺少可用 AI 出生位置，本系列已取消。", "No AI spawn point is available for the next round. The series was cancelled."));
                 return false;
             }
 
@@ -4516,7 +4948,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         arena.NextRoundAt = now + AdimiToolsAiArenaSession<MissionPeer>.CountdownSeconds;
-        Notify(owner, $"当前比分 {arena.Series!.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}），下一局 3 秒后开始。");
+        Notify(owner, MessageText($"当前比分 {arena.Series!.PlayerWins}:{arena.Series.AiWins}（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}），下一局 3 秒后开始。",
+            $"Score {arena.Series.PlayerWins}:{arena.Series.AiWins} ({AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}). The next round starts in 3 seconds."));
         return true;
     }
 
@@ -4556,7 +4989,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         }
 
         BeginLearning(arena, owner, ownerAgent);
-        Notify(owner, $"本局开始：你 {arena.Series!.PlayerWins}:{arena.Series.AiWins} AI（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。");
+        Notify(owner, MessageText($"本局开始：你 {arena.Series!.PlayerWins}:{arena.Series.AiWins} AI（{AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)}）。",
+            $"Round started: You {arena.Series.PlayerWins}:{arena.Series.AiWins} AI ({AdimiToolsDuelModes.GetModeName(arena.Series.FirstToLimit)})."));
     }
 
     private bool PrepareSpawnPositions(Arena arena, bool forPlayerRespawn = false)
@@ -4670,14 +5104,14 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             if (_duelMode?.IsPeerInRealDuelForAiChallenge(peer) == true || IsPeerReserved(peer)
                 || Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer) == true)
             {
-                failure = "训练区域内有正在对战的玩家，本次 AI 挑战已取消，请等区域空闲后重试。";
+                failure = MessageText("训练区域内有正在对战的玩家，本次 AI 挑战已取消，请等区域空闲后重试。", "Players are fighting in this area. The AI challenge was cancelled; try again when it is free.");
                 return false;
             }
 
             MatrixFrame? destination = GetOutsideSpawnForPlayer(agent, arena);
             if (!destination.HasValue)
             {
-                failure = "没有适合场内玩家的区域外复活点，本次 AI 挑战已取消，请检查地图出生点。";
+                failure = MessageText("没有适合场内玩家的区域外复活点，本次 AI 挑战已取消，请检查地图出生点。", "No suitable outside spawn is available for players in the arena. The AI challenge was cancelled; check the map spawn points.");
                 return false;
             }
 
@@ -4689,7 +5123,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         foreach (var evacuation in evacuations)
         {
             Teleport(evacuation.agent, evacuation.frame);
-            Notify(evacuation.peer, "此区域的 AI 挑战即将开始，已将你移至区域外复活点。");
+            Notify(evacuation.peer, MessageText("此区域的 AI 挑战即将开始，已将你移至区域外复活点。", "An AI challenge is about to start here. You were moved to an outside spawn point."));
         }
 
         return true;
@@ -4725,7 +5159,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             if (!_nextInterferenceWarningAt.TryGetValue(peer, out double nextWarning) || Mission.CurrentTime >= nextWarning)
             {
                 _nextInterferenceWarningAt[peer] = Mission.CurrentTime + AdimiToolsDuelInterference.WarningIntervalSeconds;
-                Notify(peer, "请勿靠近正在交战的玩家或 AI；靠近 1 米内会被移至区域外复活点。");
+                Notify(peer, MessageText("请勿靠近正在交战的玩家或 AI；靠近 1 米内会被移至区域外复活点。", "Keep clear of the fight. Within 1 metre, you will be moved to an outside spawn point."));
             }
 
             if (distanceSquared >= AdimiToolsDuelInterference.EvictionDistance * AdimiToolsDuelInterference.EvictionDistance)
@@ -4747,7 +5181,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
             }
 
             Teleport(agent, destination.Value);
-            Notify(peer, "你距离交战者过近，已将你移至区域外复活点。");
+            Notify(peer, MessageText("你距离交战者过近，已将你移至区域外复活点。", "You were too close to the fight and were moved to an outside spawn point."));
         }
 
         return true;
@@ -4937,6 +5371,8 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
                 bot.GetComponent<AdimiToolsAiArenaKick>()?.Clear();
                 bot.GetComponent<AdimiToolsAiArenaKickPunish>()?.Clear();
                 bot.GetComponent<AdimiToolsAiArenaParryCounter>()?.Clear();
+                bot.GetComponent<AdimiToolsAiArenaParryFeint>()?.Clear();
+                bot.GetComponent<AdimiToolsAiArenaLightning>()?.Clear();
                 bot.GetComponent<AdimiToolsAiArenaHitCounter>()?.Clear();
                 bot.GetComponent<AdimiToolsAiArenaAttackTactics>()?.Clear();
                 AttemptCleanup(() =>
@@ -5163,7 +5599,7 @@ internal sealed class AdimiToolsAiArenaBehavior : MissionLogic
         arena.Failed = true;
         try
         {
-            ResetArena(arena, "本组 AI 挑战出现错误，已停止本组训练。");
+            ResetArena(arena, MessageText("本组 AI 挑战出现错误，已停止本组训练。", "This AI challenge encountered an error and has been stopped."));
         }
         catch (Exception cleanupException)
         {

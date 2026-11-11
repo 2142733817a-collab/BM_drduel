@@ -229,8 +229,14 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 DuelConfig duelConfig1 = PlayersDuelConfig.GetValueOrDefault(_challengers[0].NetworkPeer!.VirtualPlayer.Id)!;
                 FirstToLimit = duelConfig1.FirstToLimit;
 
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, $"你与 {_challengers[1].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。");
-                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, $"你与 {_challengers[0].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。");
+                string requesterMessage = AdimiToolsMessageLanguage.IsEnglish
+                    ? $"Your match with {_challengers[1].NetworkPeer!.UserName} has started: {AdimiToolsDuelModes.GetModeName(FirstToLimit)}."
+                    : $"你与 {_challengers[1].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。";
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[0].NetworkPeer!, requesterMessage);
+                string requesteeMessage = AdimiToolsMessageLanguage.IsEnglish
+                    ? $"Your match with {_challengers[0].NetworkPeer!.UserName} has started: {AdimiToolsDuelModes.GetModeName(FirstToLimit)}."
+                    : $"你与 {_challengers[0].NetworkPeer!.UserName} 的对局已开始：{AdimiToolsDuelModes.GetModeName(FirstToLimit)}。";
+                AdimiToolsNotifier.ServerSendMessageToPlayer(_challengers[1].NetworkPeer!, requesteeMessage);
             }
 
             Started = false;
@@ -806,7 +812,10 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 duelList.RespawnFrame = affectedAgent.Frame;
                 if (affectorAgent != null && affectorAgent != affectedAgent && affectorAgent.MissionPeer != null)
                 {
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(affectedAgent.MissionPeer.GetNetworkPeer(), $"{affectorAgent.MissionPeer.Name} had {affectorAgent.Health}/{affectorAgent.HealthLimit} HP left.");
+                    string healthMessage = AdimiToolsMessageLanguage.IsEnglish
+                        ? $"{affectorAgent.MissionPeer.Name} had {affectorAgent.Health}/{affectorAgent.HealthLimit} HP left."
+                        : $"{affectorAgent.MissionPeer.Name} 剩余 {affectorAgent.Health}/{affectorAgent.HealthLimit} 生命值。";
+                    AdimiToolsNotifier.ServerSendMessageToPlayer(affectedAgent.MissionPeer.GetNetworkPeer(), healthMessage);
                 }
             }
 
@@ -883,13 +892,15 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         userAgent.StopUsingGameObject(isSuccessful: true, StopUsingGameObjectFlags.None);
         if (Mission.GetMissionBehavior<AdimiToolsTeamBattleBehavior>()?.IsPeerReserved(peer!) == true)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "组队对战准备或进行中，暂时不能使用传送门。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, AdimiToolsMessageLanguage.Select(
+                "组队对战准备或进行中，暂时不能使用传送门。", "Portals are unavailable while a team battle is preparing or in progress."));
             return;
         }
 
         if (target == null)
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, "此传送门的标签或落点配置有误，请联系管理员。");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(networkPeer, AdimiToolsMessageLanguage.Select(
+                "此传送门的标签或落点配置有误，请联系管理员。", "This portal has an invalid tag or destination. Please contact an administrator."));
             return;
         }
 
@@ -1041,7 +1052,18 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
 
     internal void BeginAiChallengeDisplay(int arenaId, MissionPeer owner, Agent template, int totalAiCount, int difficulty, string? troopName = null)
     {
-        _aiDuelDisplay?.Begin(arenaId, owner, troopName ?? template.Character.Name.ToString(), totalAiCount, difficulty);
+        if (_aiDuelDisplay == null)
+        {
+            return;
+        }
+
+        if (troopName == null)
+        {
+            var nativeName = template.Character.Name;
+            troopName = AdimiToolsMessageLanguage.NativeName(nativeName.Value, nativeName.ToString());
+        }
+
+        _aiDuelDisplay.Begin(arenaId, owner, troopName, totalAiCount, difficulty);
     }
 
     internal void RecordAiChallengeDisplayRound(int arenaId, bool playerWon)
@@ -1273,7 +1295,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
         {
             if (requesterNetworkPeer != null)
             {
-                AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, "对局模式尚未准备好，请稍后重试。");
+                AdimiToolsNotifier.ServerSendMessageToPlayer(requesterNetworkPeer, AdimiToolsMessageLanguage.Select(
+                    "对局模式尚未准备好，请稍后重试。", "Duel settings are not ready. Please try again."));
             }
 
             return false;
@@ -1341,13 +1364,19 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 if (AdimiToolsMountSafety.IsLiving(Mission, requesterAgent))
                 {
                     RestoreAgent(requesterAgent!);
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(duelInfo.RequesterPeer.GetNetworkPeer(), requesterStoppedDuel ? "You stopped the duel." : "Your enemy cancelled the duel.");
+                    string requesterMessage = requesterStoppedDuel
+                        ? AdimiToolsMessageLanguage.Select("你已停止对局。", "You stopped the duel.")
+                        : AdimiToolsMessageLanguage.Select("对手已取消对局。", "Your enemy cancelled the duel.");
+                    AdimiToolsNotifier.ServerSendMessageToPlayer(duelInfo.RequesterPeer.GetNetworkPeer(), requesterMessage);
                 }
 
                 if (AdimiToolsMountSafety.IsLiving(Mission, requesteeAgent))
                 {
                     RestoreAgent(requesteeAgent!);
-                    AdimiToolsNotifier.ServerSendMessageToPlayer(duelInfo.RequesteePeer.GetNetworkPeer(), requesteeStoppedDuel ? "You stopped the duel." : "Your enemy cancelled the duel.");
+                    string requesteeMessage = requesteeStoppedDuel
+                        ? AdimiToolsMessageLanguage.Select("你已停止对局。", "You stopped the duel.")
+                        : AdimiToolsMessageLanguage.Select("对手已取消对局。", "Your enemy cancelled the duel.");
+                    AdimiToolsNotifier.ServerSendMessageToPlayer(duelInfo.RequesteePeer.GetNetworkPeer(), requesteeMessage);
                 }
 
                 continue;
@@ -1552,7 +1581,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                 if (dist1 < AdimiToolsDuelInterference.EvictionDistance || dist2 < AdimiToolsDuelInterference.EvictionDistance)
                 {
                     agent.TeleportToPosition(((AdimiToolsDuelSpawnFrame)_spawnComponent.SpawnFrameBehavior).GetRandomSpawnInCurrentSection(agentVec3).origin);
-                    AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "你距离正在决斗的玩家不足 1 米，已被遣返。", true);
+                    AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), AdimiToolsMessageLanguage.Select(
+                        "你距离正在决斗的玩家不足 1 米，已被遣返。", "You were moved away for coming within 1 meter of an active duel."), true);
                 }
                 else if (dist1 < AdimiToolsDuelInterference.WarningDistance || dist2 < AdimiToolsDuelInterference.WarningDistance)
                 {
@@ -1563,7 +1593,8 @@ internal class AdimiToolsMissionMultiplayerDuel : MissionMultiplayerGameModeBase
                         if (duelConfig != null && duelConfig.LastTeleportWarningTimer < MissionTime.Now)
                         {
                             duelConfig.LastTeleportWarningTimer = MissionTime.Now + MissionTime.Seconds(AdimiToolsDuelInterference.WarningIntervalSeconds);
-                            AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), "请与正在决斗的玩家保持距离，靠近 1 米内将被遣返。", true);
+                            AdimiToolsNotifier.AdminAnnouncement(agent.MissionPeer.GetNetworkPeer(), AdimiToolsMessageLanguage.Select(
+                                "请与正在决斗的玩家保持距离，靠近 1 米内将被遣返。", "Keep clear of active duels. You will be moved away if you come within 1 meter."), true);
                         }
                     }
                 }

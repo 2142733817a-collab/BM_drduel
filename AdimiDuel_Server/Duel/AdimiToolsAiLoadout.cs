@@ -180,7 +180,8 @@ internal sealed partial class AdimiToolsAiLoadout
         catch (Exception exception)
         {
             Debug.Print($"[Adimi Tools]: AI loadout for {character.StringId} failed: {exception}");
-            reason = "该兵种的 AI 配装数据不完整，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("该兵种的 AI 配装数据不完整，本次挑战未开始。",
+                "This troop's AI loadout data is incomplete. The challenge was not started.");
             return false;
         }
     }

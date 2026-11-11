@@ -15,7 +15,8 @@ internal abstract class ChatCommand
     {
         if (!CheckRequirements(fromPeer))
         {
-            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, "Insufficient permissions.");
+            AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer,
+                AdimiDuel_Server.Duel.AdimiToolsMessageLanguage.Select("权限不足。", "Insufficient permissions."));
             return;
         }
 
@@ -30,7 +31,10 @@ internal abstract class ChatCommand
             return;
         }
 
-        AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, $"Wrong usage. Type {Description}");
+        string usageMessage = AdimiDuel_Server.Duel.AdimiToolsMessageLanguage.IsEnglish
+            ? $"Wrong usage. {Description}"
+            : $"用法错误。{Description}";
+        AdimiToolsNotifier.ServerSendMessageToPlayer(fromPeer, usageMessage);
     }
 
     // Used to check for permissions

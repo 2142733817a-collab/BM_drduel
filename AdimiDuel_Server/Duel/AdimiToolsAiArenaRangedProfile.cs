@@ -30,7 +30,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
         Mounted = mounted;
         HealthLimit = BaseHealthLimit = heroClass.Health;
         ArmorHead = ArmorTorso = ArmorArms = ArmorLegs = heroClass.ArmorValue;
-        TroopName = Character.Name.ToString();
+        var troopName = Character.Name;
+        TroopName = AdimiToolsMessageLanguage.NativeName(troopName.Value, troopName.ToString());
         if (!mounted && heroClass.StringId == "mp_heavy_ranged_battania")
         {
             BowSkillOverride = TwoHandedSkillOverride = 220;
@@ -66,7 +67,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
     public static bool TryCreateCatalog(bool mounted, out IReadOnlyList<AdimiToolsAiArenaRangedProfile>? profiles, out string reason)
     {
         profiles = null;
-        reason = "原版射手数据读取失败，本次挑战未开始。";
+        reason = AdimiToolsMessageLanguage.Select("原版射手数据读取失败，本次挑战未开始。",
+            "Could not read native archer data. The challenge was not started.");
         try
         {
             var classes = MultiplayerClassDivisions.GetMPHeroClasses().ToArray();
@@ -77,7 +79,9 @@ internal sealed class AdimiToolsAiArenaRangedProfile
                     .FirstOrDefault(candidate => candidate?.StringId == selection.culture);
                 if (culture == null || !TryCreateForCulture(culture, mounted, out AdimiToolsAiArenaRangedProfile? profile, out reason))
                 {
-                    reason = $"{selection.culture} 的原版{(mounted ? "骑射" : "顶级射手")}配置不可用，本次挑战未开始。";
+                    reason = AdimiToolsMessageLanguage.Select(
+                        $"{selection.culture} 的原版{(mounted ? "骑射" : "顶级射手")}配置不可用，本次挑战未开始。",
+                        $"The native {(mounted ? "horse archer" : "elite archer")} configuration for {char.ToUpperInvariant(selection.culture[0])}{selection.culture.Substring(1)} is unavailable. The challenge was not started.");
                     return false;
                 }
 
@@ -91,7 +95,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
         catch (Exception exception)
         {
             Debug.Print($"[Adimi Tools]: Ranged AI catalog could not be created: {exception}");
-            reason = "原版射手数据读取失败，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("原版射手数据读取失败，本次挑战未开始。",
+                "Could not read native archer data. The challenge was not started.");
             return false;
         }
     }
@@ -99,7 +104,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
     internal static bool TryCreateForCulture(BasicCultureObject culture, bool mounted, out AdimiToolsAiArenaRangedProfile? profile, out string reason)
     {
         profile = null;
-        reason = "所选阵营没有完整的原版射手配置。";
+        reason = AdimiToolsMessageLanguage.Select("所选阵营没有完整的原版射手配置。",
+            "The selected faction has no complete native archer configuration.");
         try
         {
             var selection = (mounted ? MountedSelections : ArcherSelections)
@@ -130,7 +136,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
                 if (alternatives == null || !alternatives.Any(item => item.Item2.Item?.StringId == "mp_short_bow")
                     || !alternatives.Any(item => item.Item2.Item?.StringId == "mp_arrows_barbed_mounted"))
                 {
-                    reason = "阿塞莱马穆鲁克的原版御用射手装备技能不可用，本次挑战未开始。";
+                    reason = AdimiToolsMessageLanguage.Select("阿塞莱马穆鲁克的原版御用射手装备技能不可用，本次挑战未开始。",
+                        "The native Aserai Mamluke's Royal Archer equipment perk is unavailable. The challenge was not started.");
                     return false;
                 }
 
@@ -169,7 +176,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
             if ((!hasBow && !hasCrossbow) || (hasBow && !hasArrows) || (hasCrossbow && !hasBolts)
                 || (mounted && (!hasBow || equipment[EquipmentIndex.Horse].IsEmpty || equipment[EquipmentIndex.HorseHarness].IsEmpty)))
             {
-                reason = "原版射手的远程武器、弹药或坐骑不完整，本次挑战未开始。";
+                reason = AdimiToolsMessageLanguage.Select("原版射手的远程武器、弹药或坐骑不完整，本次挑战未开始。",
+                    "The native archer's ranged weapon, ammunition, or mount is incomplete. The challenge was not started.");
                 return false;
             }
 
@@ -180,7 +188,8 @@ internal sealed class AdimiToolsAiArenaRangedProfile
         catch (Exception exception)
         {
             Debug.Print($"[Adimi Tools]: Ranged AI profile could not be created: {exception}");
-            reason = "原版射手数据读取失败，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("原版射手数据读取失败，本次挑战未开始。",
+                "Could not read native archer data. The challenge was not started.");
             return false;
         }
     }

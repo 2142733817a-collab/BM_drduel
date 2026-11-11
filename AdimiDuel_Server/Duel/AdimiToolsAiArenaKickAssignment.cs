@@ -152,6 +152,46 @@ internal sealed class AdimiToolsAiArenaKickAssignment
         return true;
     }
 
+    // If the selected bot leaves the bounded response range or becomes
+    // ineligible, retire its selection for this entire kick. Retain the
+    // no-winner lock so returning during the same animation cannot forget an
+    // earlier contact or transfer the response to a second bot.
+    public bool Abandon(int playerIndex, int botIndex)
+    {
+        if (!_players.TryGetValue(playerIndex, out PlayerState? state) || !IsActive(state)
+            || botIndex < 0 || state.BotIndex != botIndex)
+        {
+            return false;
+        }
+
+        state.BotIndex = -1;
+        return true;
+    }
+
+    // Abandon assignments when the bot is no longer eligible or has switched
+    // targets, while retaining the current target's assignment when requested.
+    // Each abandoned kick retains a no-winner lock until its own next cycle.
+    public bool AbandonBot(int botIndex, int exceptPlayerIndex = -1)
+    {
+        if (botIndex < 0)
+        {
+            return false;
+        }
+
+        bool abandoned = false;
+        foreach (KeyValuePair<int, PlayerState> entry in _players)
+        {
+            PlayerState state = entry.Value;
+            if (entry.Key != exceptPlayerIndex && state.BotIndex == botIndex && IsActive(state))
+            {
+                state.BotIndex = -1;
+                abandoned = true;
+            }
+        }
+
+        return abandoned;
+    }
+
     // Only for the caller's BeginSampling -> Observe interval. At this point a
     // previous lock may have just expired by mission time, but Observe has not
     // yet discarded the saved identity. This does not make it active again.

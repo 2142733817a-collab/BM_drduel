@@ -35,7 +35,8 @@ internal sealed class AdimiToolsAiArenaHardProfile
         ArmorTorso = ArmorAfterBonus(heroClass, selectedPerk, DrivenProperty.ArmorTorso);
         ArmorArms = ArmorAfterBonus(heroClass, selectedPerk, DrivenProperty.ArmorArms);
         ArmorLegs = ArmorAfterBonus(heroClass, selectedPerk, DrivenProperty.ArmorLegs);
-        TroopName = Character.Name.ToString();
+        var troopName = Character.Name;
+        TroopName = AdimiToolsMessageLanguage.NativeName(troopName.Value, troopName.ToString());
         TroopCost = heroClass.TroopCost;
         UsesMoloch = usesMoloch;
     }
@@ -75,7 +76,8 @@ internal sealed class AdimiToolsAiArenaHardProfile
             if (culture == null)
             {
                 profile = null;
-                reason = "随机选择的原版阵营数据不可用，无法生成困难 AI。";
+                reason = AdimiToolsMessageLanguage.Select("随机选择的原版阵营数据不可用，无法生成困难 AI。",
+                    "The randomly selected native faction is unavailable; hard AI cannot be spawned.");
                 return false;
             }
 
@@ -85,7 +87,8 @@ internal sealed class AdimiToolsAiArenaHardProfile
         {
             Debug.Print($"[Adimi Tools]: Hard AI profile could not be created: {exception}");
             profile = null;
-            reason = "困难 AI 的原版兵种数据读取失败，本次挑战未开始。";
+            reason = AdimiToolsMessageLanguage.Select("困难 AI 的原版兵种数据读取失败，本次挑战未开始。",
+                "Could not read native troop data for hard AI. The challenge was not started.");
             return false;
         }
     }
@@ -106,7 +109,8 @@ internal sealed class AdimiToolsAiArenaHardProfile
             : classes.FirstOrDefault();
         if (heroClass == null)
         {
-            reason = "所选阵营没有可用的原版近战步兵，无法生成困难 AI。";
+            reason = AdimiToolsMessageLanguage.Select("所选阵营没有可用的原版近战步兵，无法生成困难 AI。",
+                "The selected faction has no available native melee infantry; hard AI cannot be spawned.");
             return false;
         }
 
@@ -116,14 +120,19 @@ internal sealed class AdimiToolsAiArenaHardProfile
             : FindArmorPerk(heroClass);
         if (selectedPerk == null)
         {
-            reason = aserai ? "阿塞莱宫廷卫士的战场魔神技能不可用，无法生成困难 AI。" : "所选阵营的原版步兵没有可用的加强护甲技能，无法生成困难 AI。";
+            reason = aserai
+                ? AdimiToolsMessageLanguage.Select("阿塞莱宫廷卫士的战场魔神技能不可用，无法生成困难 AI。",
+                    "The Aserai Guard's Moloch perk is unavailable; hard AI cannot be spawned.")
+                : AdimiToolsMessageLanguage.Select("所选阵营的原版步兵没有可用的加强护甲技能，无法生成困难 AI。",
+                    "The selected faction's native infantry has no available armor perk; hard AI cannot be spawned.");
             return false;
         }
 
         ItemObject? greatSword = MBObjectManager.Instance.GetObject<ItemObject>(GreatSwordId);
         if (greatSword?.PrimaryWeapon?.WeaponClass != WeaponClass.TwoHandedSword)
         {
-            reason = "原版联机巨剑不可用，无法生成困难 AI。";
+            reason = AdimiToolsMessageLanguage.Select("原版联机巨剑不可用，无法生成困难 AI。",
+                "The native multiplayer greatsword is unavailable; hard AI cannot be spawned.");
             return false;
         }
 

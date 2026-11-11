@@ -26,7 +26,8 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
         Equipment = equipment;
         HealthLimit = BaseHealthLimit = heroClass.Health;
         ArmorHead = ArmorTorso = ArmorArms = ArmorLegs = heroClass.ArmorValue;
-        TroopName = Character.Name.ToString();
+        var troopName = Character.Name;
+        TroopName = AdimiToolsMessageLanguage.NativeName(troopName.Value, troopName.ToString());
     }
 
     public BasicCultureObject Culture { get; }
@@ -43,7 +44,8 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
     public static bool TryCreateCatalog(out IReadOnlyList<AdimiToolsAiArenaCavalryProfile>? profiles, out string reason)
     {
         profiles = null;
-        reason = "原版骑兵数据读取失败，本次挑战未开始。";
+        reason = AdimiToolsMessageLanguage.Select("原版骑兵数据读取失败，本次挑战未开始。",
+            "Could not read native cavalry data. The challenge was not started.");
         try
         {
             var classes = MultiplayerClassDivisions.GetMPHeroClasses().ToArray();
@@ -54,7 +56,9 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
                     .FirstOrDefault(candidate => candidate?.StringId == selection.culture);
                 if (culture == null || !TryCreateForCulture(culture, out var profile, out reason))
                 {
-                    reason = $"{selection.culture} 的原版骑兵配置不可用，本次挑战未开始。";
+                    reason = AdimiToolsMessageLanguage.Select(
+                        $"{selection.culture} 的原版骑兵配置不可用，本次挑战未开始。",
+                        $"The native cavalry configuration for {char.ToUpperInvariant(selection.culture[0])}{selection.culture.Substring(1)} is unavailable. The challenge was not started.");
                     return false;
                 }
 
@@ -75,7 +79,8 @@ internal sealed class AdimiToolsAiArenaCavalryProfile
     internal static bool TryCreateForCulture(BasicCultureObject culture, out AdimiToolsAiArenaCavalryProfile? profile, out string reason)
     {
         profile = null;
-        reason = "所选阵营没有完整的原版持枪骑兵配置。";
+        reason = AdimiToolsMessageLanguage.Select("所选阵营没有完整的原版持枪骑兵配置。",
+            "The selected faction has no complete native lance cavalry configuration.");
         try
         {
             var selection = Selections.FirstOrDefault(candidate => candidate.culture == culture.StringId);

@@ -14,7 +14,7 @@ internal class AdimiToolsTeleportDoorStandingPoint : StandingPoint
         _parentDoor?.GetFirstScriptOfType<AdimiToolsTeleportDoors>()?.OnUse(userAgent, agentBoneIndex);
     }
 
-    public override TextObject GetDescriptionText(WeakGameEntity gameEntity)
+    public override TextObject GetDescriptionText(WeakGameEntity gameEntity, Agent agent)
     {
         return new TextObject("Teleport");
     }

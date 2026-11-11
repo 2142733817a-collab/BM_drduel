@@ -60,7 +60,9 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
                 _pending.Remove(peer);
                 if (network?.IsConnectionActive == true)
                 {
-                    Notify(network, "国家切换已取消：角色状态变化或已进入其他对局。");
+                    Notify(network, AdimiToolsMessageLanguage.Select(
+                        "国家切换已取消：角色状态变化或已进入其他对局。",
+                        "Faction switch canceled: your character changed or entered another match."));
                 }
 
                 continue;
@@ -110,13 +112,17 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
 
         if (IsBusy(peer))
         {
-            Notify(network, "请先结束当前对局或 AI 挑战，再敲击国家选择物品。");
+            Notify(network, AdimiToolsMessageLanguage.Select(
+                "请先结束当前对局或 AI 挑战，再敲击国家选择物品。",
+                "Finish your current match or AI challenge before using the faction selector."));
             return;
         }
 
         if (!peer.TeamInitialPerkInfoReady)
         {
-            Notify(network, "国家或装备正在切换，请稍后再试。");
+            Notify(network, AdimiToolsMessageLanguage.Select(
+                "国家或装备正在切换，请稍后再试。",
+                "Your faction or equipment is changing. Please try again shortly."));
             return;
         }
 
@@ -147,11 +153,15 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
         string seconds = AdimiToolsDuelGuidanceText.Highlight("3");
         if (cycle)
         {
-            Notify(network, $"{seconds}秒后切换至{countryName}。\n继续挥砍可选下一国家，停手后自动进入选兵。", playSound: true);
+            Notify(network, AdimiToolsMessageLanguage.Select(
+                $"{seconds}秒后切换至{countryName}。\n继续挥砍可选下一国家，停手后自动进入选兵。",
+                $"Switching to {countryName} in {seconds} seconds.\nKeep striking to choose another faction; stop to select a troop."), playSound: true);
         }
         else
         {
-            Notify(network, $"{seconds}秒后切换至{countryName}。\n再次挥砍可重新选择并计时。", playSound: true);
+            Notify(network, AdimiToolsMessageLanguage.Select(
+                $"{seconds}秒后切换至{countryName}。\n再次挥砍可重新选择并计时。",
+                $"Switching to {countryName} in {seconds} seconds.\nStrike again to change your selection and restart the timer."), playSound: true);
         }
     }
 
@@ -176,18 +186,18 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
 
     private static void Notify(NetworkCommunicator peer, string message, bool playSound = false)
         => AdimiToolsNotifier.ServerSendGuidanceToPlayer(peer,
-            $"<span style=\"{AdimiToolsDuelGuidanceText.HighlightStyle}\">【阵营切换】</span>\n{message}", playSound);
+            $"<span style=\"{AdimiToolsDuelGuidanceText.HighlightStyle}\">{AdimiToolsMessageLanguage.Select("【阵营切换】", "[Faction Switch]")}</span>\n{message}", playSound);
 
-    // Dedicated servers can resolve culture.Name in English regardless of the
-    // recipient's language. Keep the six stock countries Chinese in this log.
+    // Dedicated-server culture names can use a different game language from
+    // the server's message setting. Resolve the six stock factions explicitly.
     private static string GetCultureName(BasicCultureObject culture) => culture.StringId switch
     {
-        "empire" => "帝国",
-        "vlandia" => "瓦兰迪亚",
-        "sturgia" => "斯特吉亚",
-        "battania" => "巴旦尼亚",
-        "khuzait" => "库赛特",
-        "aserai" => "阿塞莱",
+        "empire" => AdimiToolsMessageLanguage.Select("帝国", "Empire"),
+        "vlandia" => AdimiToolsMessageLanguage.Select("瓦兰迪亚", "Vlandia"),
+        "sturgia" => AdimiToolsMessageLanguage.Select("斯特吉亚", "Sturgia"),
+        "battania" => AdimiToolsMessageLanguage.Select("巴旦尼亚", "Battania"),
+        "khuzait" => AdimiToolsMessageLanguage.Select("库赛特", "Khuzait"),
+        "aserai" => AdimiToolsMessageLanguage.Select("阿塞莱", "Aserai"),
         _ => culture.Name.ToString(),
     };
 
@@ -203,7 +213,9 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
     {
         if (!AdimiToolsCultureClientPalette.ApplyToPlayer(network, culture.StringId))
         {
-            Notify(network, "选兵配色同步失败，未切换国家，请稍后重试。");
+            Notify(network, AdimiToolsMessageLanguage.Select(
+                "选兵配色同步失败，未切换国家，请稍后重试。",
+                "Could not synchronize troop colors. Your faction was not changed; please try again."));
             return;
         }
 
@@ -251,7 +263,10 @@ internal sealed class AdimiToolsCultureSelectionBehavior : MissionLogic
             spawning.RequestClassSelection(peer);
         }
 
-        Notify(network, $"已切换至{AdimiToolsDuelGuidanceText.Escape(GetCultureName(culture))}，请选择兵种并重生。");
+        string countryName = AdimiToolsDuelGuidanceText.Escape(GetCultureName(culture));
+        Notify(network, AdimiToolsMessageLanguage.Select(
+            $"已切换至{countryName}，请选择兵种并重生。",
+            $"Switched to {countryName}. Select a troop and respawn."));
     }
 
     private void Initialize()

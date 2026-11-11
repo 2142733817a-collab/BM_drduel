@@ -14,17 +14,16 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
     internal const float MaxDistance = 1.20f;
     internal const float MinFacingDot = 0.75f;
     internal const float MaxHeightDifference = 0.60f;
-    internal const double OpportunityIntervalSeconds = 0.8d;
     internal const double KickCooldownSeconds = 2.4d;
-    // A response to a confirmed miss may use a shorter, still bounded interval
-    // after an earlier emitted kick; otherwise the 1.6 s response window can
-    // be completely consumed by the ordinary cooldown.
+    // The response remains bounded across distinct missed-kick episodes.
     internal const double CounterKickCooldownSeconds = 1.4d;
     internal const double SignalWindowSeconds = 0.15d;
     internal const double StartTimeoutSeconds = 0.65d;
     internal const double ProtectionTimeoutSeconds = 1.2d;
     private const long SnapshotMilliseconds = 100;
     private const long GuardCancellationSnapshotMilliseconds = 30;
+    private const long ScopeSnapshotMilliseconds = 200;
+    private const long EarlyFilterSnapshotMilliseconds = 100;
 
     private const Agent.MovementControlFlag DefenseBits = Agent.MovementControlFlag.DefendMask
         | Agent.MovementControlFlag.DefendBlock;
@@ -33,8 +32,22 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
     private const Agent.MovementControlFlag TranslationMask = Agent.MovementControlFlag.Forward
         | Agent.MovementControlFlag.Backward | Agent.MovementControlFlag.StrafeLeft | Agent.MovementControlFlag.StrafeRight;
 
+    // Native invokes the components for one AI input serially on its callback
+    // thread. Thread-local data prevents different agents and concurrent
+    // callbacks from sharing a native-kick or passive-guard decision.
+    [ThreadStatic]
+    private static AdimiToolsAiArenaKick? _earlyFilterOwner;
+    [ThreadStatic]
+    private static bool _earlyFilterSawKick;
+    [ThreadStatic]
+    private static Agent.MovementControlFlag _earlyFilterDefense;
+    [ThreadStatic]
+    private static long _earlyFilterExpiresAt;
+
     private readonly object _gate = new();
     private readonly Action<double, int>? _counterKickSent;
+    private bool _earlyFilterBound;
+    private long _scopeExpiresAt;
     private bool _armed;
     private bool _counterOpportunity;
     private int _target = -1;
@@ -42,8 +55,6 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
     private long _guardCancellationExpiresAt;
     private long _duplicateSuppressedUntil;
     private double _lastObservedAt;
-    private double _nextOpportunityAt;
-    private double _cooldownUntil;
     private double _counterCooldownUntil;
     private bool _hasObservation;
     // Once sent, a kick needs a bounded startup/commit period. All engine
@@ -52,7 +63,6 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
     private bool _protecting;
     private bool _activeCounter;
     private bool _observedKick;
-    private bool _earlyContact;
     private int _activeTarget = -1;
     private double _issuedAt;
     private long _protectionExpiresAt;
@@ -67,6 +77,57 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         _counterKickSent = counterKickSent;
     }
 
+    // The early component is attached before any guard/attack component and
+    // is bound only after this component has been constructed. No engine state
+    // is inspected from either method.
+    public void BindEarlyFilter()
+    {
+        lock (_gate)
+        {
+            _earlyFilterBound = true;
+        }
+    }
+
+    public void FilterNativeKick(ref Agent.EventControlFlag eventFlag, Agent.MovementControlFlag movementFlag)
+    {
+        lock (_gate)
+        {
+            long clock = Stopwatch.GetTimestamp();
+            if (!_earlyFilterBound || clock >= _scopeExpiresAt)
+            {
+                if (ReferenceEquals(_earlyFilterOwner, this))
+                {
+                    ClearEarlyFilterContext();
+                }
+
+                return;
+            }
+
+            _earlyFilterOwner = this;
+            _earlyFilterSawKick = (eventFlag & Agent.EventControlFlag.Kick) != 0;
+            _earlyFilterDefense = movementFlag & DefenseBits;
+            _earlyFilterExpiresAt = AddMilliseconds(clock, EarlyFilterSnapshotMilliseconds);
+            eventFlag &= ~Agent.EventControlFlag.Kick;
+        }
+    }
+
+    // Called on the mission thread for this arena's living on-foot infantry.
+    // A bounded managed snapshot keeps callback threads from reading Native
+    // agent state and releases input if the mission stops publishing scope.
+    public void SetCounterOnlyScope(bool enabled)
+    {
+        lock (_gate)
+        {
+            _scopeExpiresAt = enabled ? AddMilliseconds(Stopwatch.GetTimestamp(), ScopeSnapshotMilliseconds) : 0;
+            if (!enabled)
+            {
+                Disarm();
+                EndProtection();
+                _duplicateSuppressedUntil = 0;
+            }
+        }
+    }
+
     // The later footwork callback must yield to a fresh kick protection even
     // after the brief Kick event has ended. No engine reads occur here.
     public bool HasFreshProtection()
@@ -74,7 +135,7 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         lock (_gate)
         {
             long clock = Stopwatch.GetTimestamp();
-            return _protecting && clock < _protectionSnapshotExpiresAt && clock < _protectionExpiresAt;
+            return clock < _scopeExpiresAt && _protecting && clock < _protectionSnapshotExpiresAt && clock < _protectionExpiresAt;
         }
     }
 
@@ -85,8 +146,8 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         lock (_gate)
         {
             long clock = Stopwatch.GetTimestamp();
-            return (_armed && clock < _snapshotExpiresAt && clock >= _duplicateSuppressedUntil)
-                || (_protecting && clock < _protectionSnapshotExpiresAt && clock < _protectionExpiresAt);
+            return clock < _scopeExpiresAt && ((_armed && clock < _snapshotExpiresAt && clock >= _duplicateSuppressedUntil)
+                || (_protecting && clock < _protectionSnapshotExpiresAt && clock < _protectionExpiresAt));
         }
     }
 
@@ -94,11 +155,9 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
     // its melee equipment and a valid hostile target. busy covers every state
     // except a confirmed Idle/Guard/Other upper action with stage None, as well
     // as hit reactions, weapon changes and other controlled tactics;
-    // enemyAttacking covers nearby releases and kicks. A held ready alone does
-    // not prevent an opportunistic kick. The caller
-    // obtains kickClear from Agent.KickClear(), never from the AI callback.
-    // roll is one independent random sample in [0, 1); it is only evaluated
-    // at bounded opportunities, never once per frame as a kick probability.
+    // enemyAttacking covers nearby releases and kicks. The caller obtains
+    // kickClear from Agent.KickClear(), never from the AI callback. The caller
+    // authorizes counterOpportunity only for a tracked, eligible missed kick.
     public void Observe(double now, int targetIndex, bool eligible, float distance, float facingDot,
         float verticalDistance, bool kickClear, bool busy, bool enemyAttacking, bool counterPending, double roll, double chance,
         bool counterOpportunity = false, Agent.ActionCodeType? ownUpper = null, Agent.ActionCodeType? ownLower = null,
@@ -120,9 +179,7 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
                 Disarm();
                 EndProtection();
                 _lastObservedAt = now;
-                _nextOpportunityAt = now + KickCooldownSeconds;
-                _cooldownUntil = _nextOpportunityAt;
-                _counterCooldownUntil = _nextOpportunityAt;
+                _counterCooldownUntil = now + KickCooldownSeconds;
                 return;
             }
 
@@ -173,7 +230,7 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
                 }
             }
 
-            bool valid = eligible && targetIndex >= 0 && kickClear && !busy && !enemyAttacking && !counterPending
+            bool valid = counterOpportunity && eligible && targetIndex >= 0 && kickClear && !busy && !enemyAttacking && !counterPending
                 && float.IsFinite(distance) && distance >= MinDistance && distance <= MaxDistance
                 && float.IsFinite(facingDot) && facingDot >= MinFacingDot && facingDot <= 1.001f
                 && float.IsFinite(verticalDistance) && Math.Abs(verticalDistance) <= MaxHeightDifference
@@ -191,39 +248,31 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
                 return;
             }
 
-            if (_armed && (_target != targetIndex || clock >= _snapshotExpiresAt))
+            if (_armed && _target != targetIndex)
+            {
+                Disarm();
+                return;
+            }
+
+            if (_armed && clock >= _snapshotExpiresAt)
             {
                 Disarm();
             }
 
             if (_armed)
             {
-                // An armed ordinary kick can serve the same target's counter
-                // opportunity; clearing that opportunity restores normal use.
-                _counterOpportunity = counterOpportunity;
                 _guardCancellationExpiresAt = allowGuardCancellation
                     ? AddMilliseconds(clock, GuardCancellationSnapshotMilliseconds) : 0;
                 return;
             }
 
-            // A missed ordinary random roll only throttles ordinary attempts.
-            // A deliberate counter has a shorter cooldown but never bypasses
-            // the bounded interval from a kick that was actually emitted.
-            if (counterOpportunity ? now < _counterCooldownUntil
-                : now < _cooldownUntil || now < _nextOpportunityAt)
-            {
-                return;
-            }
-
-            // A missed roll or input conflict cannot be retried every frame.
-            _nextOpportunityAt = now + OpportunityIntervalSeconds;
-            if (!counterOpportunity && roll >= chance)
+            if (now < _counterCooldownUntil)
             {
                 return;
             }
 
             _target = targetIndex;
-            _counterOpportunity = counterOpportunity;
+            _counterOpportunity = true;
             _snapshotExpiresAt = AddMilliseconds(clock, SnapshotMilliseconds);
             _guardCancellationExpiresAt = allowGuardCancellation
                 ? AddMilliseconds(clock, GuardCancellationSnapshotMilliseconds) : 0;
@@ -289,10 +338,9 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         }
     }
 
-    // Called only after the separate counter-punish component has matched
-    // this bot's kick against its current target and contact window. If the
-    // collision precedes our first animation sample, require that sample to
-    // confirm a kick before releasing the pending protection.
+    // Called only after the separate counter-punish component has confirmed
+    // this bot's kick against its current target and contact window. That
+    // contact itself confirms the kick even before the next animation sample.
     public void NotifyCounterKickContact(double now, int targetIndex)
     {
         lock (_gate)
@@ -304,14 +352,7 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
                 return;
             }
 
-            if (_observedKick)
-            {
-                EndProtection();
-            }
-            else
-            {
-                _earlyContact = true;
-            }
+            EndProtection();
         }
     }
 
@@ -323,9 +364,31 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         int notifiedTarget = -1;
         lock (_gate)
         {
+            long inputTimestamp = Stopwatch.GetTimestamp();
+            bool matchingFilter = ReferenceEquals(_earlyFilterOwner, this);
+            bool freshFilter = matchingFilter && inputTimestamp < _earlyFilterExpiresAt;
+            bool filteredKick = freshFilter && _earlyFilterSawKick;
+            Agent.MovementControlFlag filteredDefense = freshFilter ? _earlyFilterDefense : Agent.MovementControlFlag.None;
+            if (matchingFilter)
+            {
+                ClearEarlyFilterContext();
+            }
+
+            if (inputTimestamp >= _scopeExpiresAt)
+            {
+                Disarm();
+                EndProtection();
+                return;
+            }
+
+            // Scope is published only for eligible arena infantry. Native's
+            // unrelated kick input is never authorized; the valid counter
+            // path below may add its own signal.
+            bool nativeKickRequested = (eventFlag & Agent.EventControlFlag.Kick) != 0 || filteredKick
+                || (_earlyFilterBound && !freshFilter);
+            eventFlag &= ~Agent.EventControlFlag.Kick;
             if (Stopwatch.GetTimestamp() < _duplicateSuppressedUntil)
             {
-                eventFlag &= ~Agent.EventControlFlag.Kick;
                 Disarm();
                 EndProtection();
                 return;
@@ -369,16 +432,14 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
             // The caller authorizes this only for a sampled, ordinary guard
             // in a safe kick opportunity with no active threat.
             // Ambiguous defense/attack inputs and special events always win.
-            bool cancelPassiveGuard = inputClock < _guardCancellationExpiresAt
+            bool defenseChangedAfterFilter = _earlyFilterBound && (!freshFilter || filteredDefense != defense);
+            bool cancelPassiveGuard = !nativeKickRequested && !defenseChangedAfterFilter && inputClock < _guardCancellationExpiresAt
                 && defense != Agent.MovementControlFlag.None
                 && (defenseDirection == 0 || (defenseDirection & (defenseDirection - 1u)) == 0)
                 && (movementFlag & (Agent.MovementControlFlag.Action | Agent.MovementControlFlag.AttackMask)) == 0
                 && (eventFlag & ~CompatibleEvents) == Agent.EventControlFlag.None;
-            bool nativeCounterKick = _counterOpportunity && (eventFlag & Agent.EventControlFlag.Kick) != 0
-                && (eventFlag & ~(CompatibleEvents | Agent.EventControlFlag.Kick)) == Agent.EventControlFlag.None
-                && (movementFlag & ConflictingMovement) == 0;
             if (inputClock >= _snapshotExpiresAt
-                || (!nativeCounterKick && (eventFlag & ~CompatibleEvents) != Agent.EventControlFlag.None)
+                || (eventFlag & ~CompatibleEvents) != Agent.EventControlFlag.None
                 || (movementFlag & Agent.MovementControlFlag.Action) != 0
                 || (defense != Agent.MovementControlFlag.None && !cancelPassiveGuard))
             {
@@ -388,7 +449,7 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
 
             Agent.MovementControlFlag attack = movementFlag & Agent.MovementControlFlag.AttackMask;
             uint attackBits = (uint)attack;
-            if (!nativeCounterKick && attackBits != 0 && (attackBits & (attackBits - 1u)) != 0)
+            if (attackBits != 0 && (attackBits & (attackBits - 1u)) != 0)
             {
                 Disarm();
                 return;
@@ -403,14 +464,9 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
                 movementFlag &= ~DefenseBits;
             }
 
-            if (!nativeCounterKick)
-            {
-                movementFlag &= ~Agent.MovementControlFlag.AttackMask;
-            }
+            movementFlag &= ~Agent.MovementControlFlag.AttackMask;
 
             eventFlag |= Agent.EventControlFlag.Kick;
-            _nextOpportunityAt = _lastObservedAt + KickCooldownSeconds;
-            _cooldownUntil = _nextOpportunityAt;
             _counterCooldownUntil = _lastObservedAt + CounterKickCooldownSeconds;
             long issuedClock = Stopwatch.GetTimestamp();
             _protecting = true;
@@ -418,7 +474,6 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
             _activeTarget = _target;
             _issuedAt = _lastObservedAt;
             _observedKick = false;
-            _earlyContact = false;
             _signalExpiresAt = AddMilliseconds(issuedClock, (long)(SignalWindowSeconds * 1000d));
             _protectionExpiresAt = AddMilliseconds(issuedClock, (long)(ProtectionTimeoutSeconds * 1000d));
             _protectionSnapshotExpiresAt = AddMilliseconds(issuedClock, SnapshotMilliseconds);
@@ -452,12 +507,19 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         _guardCancellationExpiresAt = 0;
     }
 
+    private static void ClearEarlyFilterContext()
+    {
+        _earlyFilterOwner = null;
+        _earlyFilterSawKick = false;
+        _earlyFilterDefense = Agent.MovementControlFlag.None;
+        _earlyFilterExpiresAt = 0;
+    }
+
     private void EndProtection()
     {
         _protecting = false;
         _activeCounter = false;
         _observedKick = false;
-        _earlyContact = false;
         _activeTarget = -1;
         _protectionExpiresAt = 0;
         _signalExpiresAt = 0;
@@ -482,10 +544,6 @@ internal sealed class AdimiToolsAiArenaKick : AgentComponent
         if (kicking)
         {
             _observedKick = true;
-            if (_earlyContact)
-            {
-                EndProtection();
-            }
         }
         else if (_observedKick)
         {

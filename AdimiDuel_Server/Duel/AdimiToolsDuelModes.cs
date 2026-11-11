@@ -37,10 +37,10 @@ internal static class AdimiToolsDuelModes
     {
         return limit switch
         {
-            1 => "1局定胜负",
-            2 => "3局2胜",
-            3 => "5局3胜",
-            _ => "未知赛制",
+            1 => AdimiToolsMessageLanguage.Select("1局定胜负", "1 round"),
+            2 => AdimiToolsMessageLanguage.Select("3局2胜", "Best of 3 (2 wins)"),
+            3 => AdimiToolsMessageLanguage.Select("5局3胜", "Best of 5 (3 wins)"),
+            _ => AdimiToolsMessageLanguage.Select("未知赛制", "Unknown format"),
         };
     }
 

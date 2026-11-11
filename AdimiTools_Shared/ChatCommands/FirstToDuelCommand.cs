@@ -9,7 +9,8 @@ internal class FirstToDuelCommand : ChatCommand
     {
         Name = "ft";
         Alias = new string[] { "firstto" };
-        Description = "输入 !1、!3.2 或 !5.3 切换赛制。";
+        Description = AdimiDuel_Server.Duel.AdimiToolsMessageLanguage.Select("输入 !1、!3.2 或 !5.3 切换赛制。",
+            "Use !1, !3.2, or !5.3 to change the match format.");
         Overloads = new CommandOverload[]
         {
             new(new[] { ChatCommandParameterType.Int32 }, Execute),
@@ -64,7 +65,8 @@ internal class FirstToDuelCommand : ChatCommand
         if (missionPeer.Team?.IsDefender == true)
         {
             AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer,
-                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure("对局进行中，无法切换胜场设置。"));
+                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure(AdimiDuel_Server.Duel.AdimiToolsMessageLanguage.Select(
+                    "对局进行中，无法切换胜场设置。", "The match format cannot be changed during a match.")));
             return;
         }
 
@@ -77,7 +79,8 @@ internal class FirstToDuelCommand : ChatCommand
         else
         {
             AdimiToolsNotifier.ServerSendGuidanceToPlayer(fromPeer,
-                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure("无法读取对局设置，请稍后重试。"));
+                AdimiDuel_Server.Duel.AdimiToolsDuelGuidanceText.GetModeFailure(AdimiDuel_Server.Duel.AdimiToolsMessageLanguage.Select(
+                    "无法读取对局设置，请稍后重试。", "Match settings are unavailable. Please try again.")));
         }
     }
 }

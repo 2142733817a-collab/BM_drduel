@@ -3,6 +3,10 @@ The code was not formatted / refactored etc. since it was created out of curiosi
 
 Some small parts (messages / reflections) might be copied by krex his Admin tool or from takeo (cRPG).
 
+## 服务器提示语言
+
+部署者可设置服务器进程环境变量 `ADIMI_MESSAGE_LANGUAGE=en` 使用英文提示；不设置或设为 `zh` 时使用中文。服务器内的玩家共用该语言，无需安装客户端 Mod；修改配置后需重启服务器。详见[服务器提示语言设置](docs/服务器提示语言设置.md)。
+
 ## 1局定胜负 / 3局2胜 / 5局3胜
 
 循环切换：给带碰撞、可被武器击中的木桶或其他物品添加一个 `adimi_duel_mode_cycle` 标签。每次敲击按敲击者当前个人设置轮换：**1局定胜负 → 3局2胜 → 5局3胜 → 1局定胜负**。默认单局，因此第一次敲击会选中3局2胜。多人共用同一物品时，各自只改变自己的设置，左下角显示选中的赛制；服务器自动挂载命中脚本，无须在编辑器里添加自定义脚本。

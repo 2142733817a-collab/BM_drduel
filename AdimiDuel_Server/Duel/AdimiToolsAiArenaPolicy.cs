@@ -305,7 +305,13 @@ internal static class AdimiToolsAiArenaDifficulty
 
     public static string GetName(int difficulty)
     {
-        return difficulty switch { Simple => "简单", Normal => "一般", Hard => "困难", _ => "未知" };
+        return difficulty switch
+        {
+            Simple => AdimiToolsMessageLanguage.Select("简单", "Easy"),
+            Normal => AdimiToolsMessageLanguage.Select("一般", "Normal"),
+            Hard => AdimiToolsMessageLanguage.Select("困难", "Hard"),
+            _ => AdimiToolsMessageLanguage.Select("未知", "Unknown"),
+        };
     }
 }
 
